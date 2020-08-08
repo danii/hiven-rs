@@ -1,3 +1,9 @@
+use reqwest::Client as HTTPClient;
+use async_tungstenite::tokio::connect_async;
+use async_tungstenite::tungstenite::Message;
+use futures::sink::SinkExt;
+use futures::stream::StreamExt;
+
 pub async fn do_sex() {
 	let mut socket = connect_async("wss://swarm-dev.hiven.io/socket?encoding=json&compression=text_json").await.unwrap().0;
 

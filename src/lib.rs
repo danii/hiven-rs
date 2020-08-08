@@ -1,4 +1,5 @@
 mod gateway;
+pub mod testing;
 
 use async_tungstenite::{tokio::connect_async as websocket_async, tungstenite::Message};
 use futures::{sink::SinkExt, stream::StreamExt};
@@ -61,4 +62,16 @@ impl<'u, 't> Client<'u, 't> {
 			
 		}
 	}
+}
+
+pub fn do_sex() {
+	use self::gateway::Frame;
+	use serde_json::{from_str, to_string};
+
+	let serialized = "{\"op\":1,\"d\":{\"hbt_int\":30000}}";
+	println!("{}", serialized);
+	let deserialized: Frame = from_str(serialized).unwrap();
+	println!("{:?}", deserialized);
+	let serialized = to_string(&deserialized).unwrap();
+	println!("{}", serialized);
 }
