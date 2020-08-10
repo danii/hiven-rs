@@ -4,7 +4,7 @@ use serde::{
 };
 
 const FROM_STR_ERR: &'static str =
-"string value that can be parsed into other values";
+	"string value that can be parsed into other values";
 
 pub(crate) fn from_str<'d, T, D>(deserializer: D) -> Result<T, D::Error>
 		where T: std::str::FromStr,
