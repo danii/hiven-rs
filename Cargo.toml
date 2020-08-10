@@ -3,6 +3,7 @@ name = "hiven-rs"
 version = "0.1.0"
 authors = ["Daniel Conley <danielc030417@gmail.com>"]
 edition = "2018"
+description = "API bindings for hiven.io"
 readme = "README.md"
 repository = "https://github.com/Daniihh/hiven-rs"
 license = "MIT"
