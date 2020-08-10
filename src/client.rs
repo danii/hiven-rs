@@ -19,6 +19,25 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
+	pub async fn start_gateway<E>(&self, event_handler: E)
+			where E: EventHandler {
+		let gate_keeper = GateKeeper {
+			client: self,
+			event_handler: event_handler
+		};
+
+		gate_keeper.start_gateway().await;
+	}
+}
+
+pub struct GateKeeper<'c, 'u, 't, E>
+		where E: EventHandler {
+	pub client: &'c Client<'u, 't>,
+	pub event_handler: E
+}
+
+impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
+		where E: EventHandler{
 	pub async fn start_gateway(&self) {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
@@ -31,7 +50,7 @@ impl<'u, 't> Client<'u, 't> {
 
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
 			mut receiver: Receiver<Option<Frame>>) {
-		let url = format!("wss://{}/socket", self.addresses.1);
+		let url = format!("wss://{}/socket", self.client.addresses.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
 		loop {
@@ -44,8 +63,13 @@ impl<'u, 't> Client<'u, 't> {
 				// before SocketClose?)
 				frame = incoming_frame => match frame.unwrap().unwrap() {
 					// Remove unwrap()s.
-					Message::Text(frame) => sender.send(
-						from_json::<Frame>(&frame).unwrap().into_owned()).await.unwrap(),
+					Message::Text(frame) => {
+						println!("{}", frame);
+						let a = from_json::<Frame>(&frame);
+						if let Ok(frame) = a {
+							sender.send(frame.into_owned()).await.unwrap();
+						}
+					},
 					_ => unimplemented!() // Remove unimplemented!().
 				},
 				// Remove unwrap()s.
@@ -62,8 +86,9 @@ impl<'u, 't> Client<'u, 't> {
 
 		let heart_beat = if let Frame::Hello(HelloOpCode {heart_beat})
 				= incoming_frame {
+			let mut sender = sender.clone();
+			let duration = Duration::from_millis(heart_beat.into());
 			async move {
-				let duration = Duration::from_millis(heart_beat.into());
 				loop {
 					// Remove unwrap().
 					sleep(duration).await;
@@ -71,12 +96,18 @@ impl<'u, 't> Client<'u, 't> {
 				}
 			}
 		} else {unimplemented!()}; // Remove unimplemented!().
-		heart_beat.await;
+
+		let frame = Frame::Login(LoginOpCode {token: self.client.token.to_owned()});
+		sender.send(Some(frame)).await;
 
 		loop {
-			// Todo
-			unimplemented!();
+			// Remove unwrap().
+			let incoming_frame = receiver.next().await.unwrap();
 			println!("{:?}", incoming_frame);
 		}
 	}
+}
+
+pub trait EventHandler {
+	
 }

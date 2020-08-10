@@ -9,6 +9,7 @@ use std::{borrow::Cow, fmt::{Formatter, Result as FMTResult}};
 
 #[derive(Debug, IntoOwned)]
 pub enum Frame {
+	Event(EventOpCode),
 	Hello(HelloOpCode),
 	Login(LoginOpCode),
 	HeartBeatAck
@@ -137,6 +138,11 @@ impl<'d> Visitor<'d> for FrameVisitor {
 			Err(DeserializeError::missing_field("op"))
 		}
 	}
+}
+
+#[derive(Debug, IntoOwned)]
+pub enum EventOpCode {
+	InitState
 }
 
 #[derive(Debug, Deserialize, IntoOwned, Serialize)]
