@@ -1,5 +1,4 @@
 use self::super::data::{ClientSettings, User};
-use derive_into_owned::IntoOwned;
 use serde::{
 	Deserialize, Serialize,
 	de::{Deserializer, Error as DeserializeError, MapAccess, Unexpected, Visitor},
@@ -8,7 +7,7 @@ use serde::{
 use serde_value::Value as UndeserializedAny;
 use std::fmt::{Formatter, Result as FMTResult};
 
-#[derive(Debug, IntoOwned)]
+#[derive(Debug)]
 pub enum Frame {
 	Event(EventOpCode),
 	Hello(HelloOpCode),
@@ -234,24 +233,24 @@ impl<'d> Visitor<'d> for FrameVisitor {
 }
 
 // Automatically serialized and deserialized by Frame.
-#[derive(Debug, IntoOwned)]
+#[derive(Debug)]
 pub enum EventOpCode {
 	InitState(InitStateEvent)
 }
 
-#[derive(Debug, Deserialize, IntoOwned, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct InitStateEvent {
 	user: User,
 	settings: ClientSettings
 }
 
-#[derive(Debug, Deserialize, IntoOwned, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct HelloOpCode {
 	#[serde(rename = "hbt_int")]
 	pub heart_beat: u16
 }
 
-#[derive(Debug, Deserialize, IntoOwned, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct LoginOpCode {
 	pub token: String
 }

@@ -68,7 +68,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						let a = from_json::<Frame>(&frame);
 						println!("{:?}", a);
 						if let Ok(frame) = a {
-							sender.send(frame.into_owned()).await.unwrap();
+							sender.send(frame).await.unwrap();
 						}
 					},
 					_ => unimplemented!("B") // Remove unimplemented!().
