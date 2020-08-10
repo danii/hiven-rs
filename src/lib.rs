@@ -1,9 +1,9 @@
 #![feature(try_blocks)]
-mod client;
-mod data;
-mod gateway;
-mod http;
+pub mod client;
+pub mod data;
+pub mod gateway;
+pub mod http;
 pub mod testing;
+mod util;
 
-pub use self::client::Client;
-pub use self::client::EventHandler;
+pub use self::client::{Client, EventHandler, GateKeeper};

@@ -1,4 +1,4 @@
-use self::super::data::{ClientSettings, User};
+use self::super::{data::{ClientSettings, House, Message, User}, util::from_str};
 use serde::{
 	Deserialize, Serialize,
 	de::{Deserializer, Error as DeserializeError, MapAccess, Unexpected, Visitor},
@@ -9,10 +9,10 @@ use std::fmt::{Formatter, Result as FMTResult};
 
 #[derive(Debug)]
 pub enum Frame {
-	Event(EventOpCode),
-	Hello(HelloOpCode),
-	Login(LoginOpCode),
-	HeartBeatAck
+	Event(OpCodeEvent),
+	Hello(OpCodeHello),
+	Login(OpCodeLogin),
+	HeartBeat
 }
 
 impl<'d> Deserialize<'d> for Frame {
@@ -41,7 +41,7 @@ impl Serialize for Frame {
 				map.serialize_entry("d", op_code)?;
 				map.end()
 			},
-			Self::HeartBeatAck => {
+			Self::HeartBeat => {
 				let mut map = serializer.serialize_map(Some(1))?;
 				map.serialize_entry("op", &3)?;
 				map.end()
@@ -103,26 +103,31 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				"d" => if result.is_none() && data.is_none() {match op_code {
 					// OpCode deserialization...
 
-					// EventOpCode...
+					// OpCodeEvent...
 					0 => if let None = event {
 						data = Some(map.next_value()?);
 						break
-					} else {match event.unwrap() {
+					} else {result = Some(Frame::Event(match event.unwrap() {
 						// "op" was 0 and "e" was found before "d".
 						// No need to use UndeserializedAny.
 						// Event deserialization...
 
-						// InitState...
-						"INIT_STATE" => result =
-							Some(Frame::Event(EventOpCode::InitState(map.next_value()?))),
+						// EventInitState...
+						"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
+						// EventHouseJoin...
+						"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
+						// EventTypingStart...
+						"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
+						// EventMessageCreate...
+						"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
 
 						// Invalid event...
 						event @ _ => Err(DeserializeError::invalid_value(
 							Unexpected::Str(event), &"valid event"))?
-					}},
-					// HelloOpCode...
+					}))},
+					// OpCodeHello...
 					1 => result = Some(Frame::Hello(map.next_value()?)),
-					// LoginOpCode...
+					// OpCodeLogin...
 					2 => result = Some(Frame::Login(map.next_value()?)),
 
 					// Operation codes that don't have data...
@@ -138,11 +143,17 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				// "op" was 0 and "d" was found before "e".
 				// We must use UndeserializedAny.
 				let event = event.unwrap();
-				let result: EventOpCode = match event {
+				let result: OpCodeEvent = match event {
 					// Event deserialization...
 
-					// InitState...
-					"INIT_STATE" => EventOpCode::InitState(map.next_value()?),
+					// EventInitState...
+					"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
+					// EventHouseJoin...
+					"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
+					// EventTypingStart...
+					"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
+					// EventMessageCreate...
+					"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
 
 					// Invalid event...
 					event @ _ => Err(DeserializeError::invalid_value(
@@ -158,8 +169,8 @@ impl<'d> Visitor<'d> for FrameVisitor {
 					None => match op_code {
 						// OpCode deserialization...
 
-						// HeartBeatAckOpCode...
-						3 => Frame::HeartBeatAck,
+						// OpCodeHeartBeat...
+						3 => Frame::HeartBeat,
 
 						// Operation codes that have data...
 						0 | 1 | 2 => Err(DeserializeError::missing_field("d"))?,
@@ -187,20 +198,26 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				"op" => if result.is_none() && !op_zero {match map.next_value::<u8>()? {
 					// OpCode deserialization...
 
-					// EventOpCode...
+					// OpCodeEvent...
 					0 => if let Some(event) = event {result = Some(Frame::Event(
 						match event {
 							// Event deserialization...
 
-							// InitState...
-							"INIT_STATE" => EventOpCode::InitState(map.next_value()?),
+							// EventInitState...
+							"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
+							// EventHouseJoin...
+							"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
+							// EventTypingStart...
+							"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
+							// EventMessageCreate...
+							"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
 
 							// Invalid event...
 							event @ _ => Err(DeserializeError::invalid_value(
 								Unexpected::Str(event), &"valid event"))?
 						}
 					))} else {op_zero = true},
-					// HelloOpCode...
+					// OpCodeHello...
 					1 => result = Some(Frame::Hello(data_into()?)),
 
 					// Operation codes that don't have data...
@@ -212,8 +229,14 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				"e" => if op_zero {result = Some(Frame::Event(match map.next_value()? {
 					// Event deserialization...
 
-					// InitState...
-					"INIT_STATE" => EventOpCode::InitState(map.next_value()?),
+					// EventInitState...
+					"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
+					// EventHouseJoin...
+					"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
+					// EventTypingStart...
+					"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
+					// EventMessageCreate...
+					"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
 
 					// Invalid event...
 					event @ _ => Err(DeserializeError::invalid_value(
@@ -234,25 +257,36 @@ impl<'d> Visitor<'d> for FrameVisitor {
 
 // Automatically serialized and deserialized by Frame.
 #[derive(Debug)]
-pub enum EventOpCode {
-	InitState(InitStateEvent)
+pub enum OpCodeEvent {
+	InitState(EventInitState),
+	HouseJoin(House),
+	TypingStart(EventTypingStart),
+	MessageCreate(Message)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct InitStateEvent {
-	user: User,
-	settings: ClientSettings
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct HelloOpCode {
+pub struct OpCodeHello {
 	#[serde(rename = "hbt_int")]
 	pub heart_beat: u16
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct LoginOpCode {
+pub struct OpCodeLogin {
 	pub token: String
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EventInitState {
+	pub user: User,
+	pub settings: ClientSettings
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EventTypingStart {
+	#[serde(deserialize_with = "from_str")]
+	pub room_id: u64,
+	#[serde(rename = "author_id", deserialize_with = "from_str")]
+	pub user_id: u64
 }
 
 #[cfg(test)]

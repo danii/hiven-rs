@@ -1,3 +1,5 @@
+#![allow(dead_code)] // File will be worked on later...
+
 enum RequestInfo {
 	MessageSend {
 		channel_id: u64,
