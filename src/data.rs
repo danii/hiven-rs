@@ -32,6 +32,12 @@ pub struct Room {
 	pub id: u64
 }
 
+impl From<Room> for u64 {
+	fn from(room: Room) -> u64 {
+		room.id
+	}
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Message {
 	pub content: String,

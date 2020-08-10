@@ -1,6 +1,47 @@
-#![allow(dead_code)] // File will be worked on later...
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
 
-enum RequestInfo {
+pub struct RequestInfo {
+	pub path: PathInfo,
+	pub token: String,
+	pub body: RequestBodyInfo
+}
+
+pub enum PathInfo {
+	MessageSend {
+		channel_id: u64
+	}
+}
+
+impl PathInfo {
+	pub fn path(&self) -> String {
+		match self {
+			Self::MessageSend {channel_id, ..} =>
+				format!("/rooms/{}/messages", channel_id),
+			/*Self::MessageEdit {channel_id, message_id, ..} |
+			Self::MessageDelete {channel_id, message_id, ..} =>
+				format!("/rooms/{}/messages/{}", channel_id, message_id)*/
+		}
+	}
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum RequestBodyInfo {
+	MessageSend {
+		content: String
+	}
+}
+
+impl RequestBodyInfo {
+	pub fn method(&self) -> Method {
+		match self {
+			Self::MessageSend {..} => Method::POST
+		}
+	}
+}
+
+/*pub enum RequestInfo {
 	MessageSend {
 		channel_id: u64,
 		content: String
@@ -17,7 +58,7 @@ enum RequestInfo {
 }
 
 impl RequestInfo {
-	fn get_path(&self) -> String {
+	pub fn get_path(&self) -> String {
 		match self {
 			Self::MessageSend {channel_id, ..} =>
 				format!("/rooms/{}/messages", channel_id),
@@ -27,11 +68,11 @@ impl RequestInfo {
 		}
 	}
 
-	fn get_method(&self) -> &'static str {
+	pub fn get_method(&self) -> &'static str {
 		match self {
 			Self::MessageSend {..} => "POST",
 			Self::MessageEdit {..} => "PATCH",
 			Self::MessageDelete {..} => "DELETE"
 		}
 	}
-}
+}*/

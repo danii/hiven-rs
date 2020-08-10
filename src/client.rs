@@ -4,6 +4,10 @@ use self::super::{
 		EventInitState, EventTypingStart,
 		Frame,
 		OpCodeEvent, OpCodeHello, OpCodeLogin
+	},
+	http::{
+		PathInfo,
+		RequestInfo, RequestBodyInfo
 	}
 };
 use async_tungstenite::{
@@ -11,9 +15,9 @@ use async_tungstenite::{
 	tungstenite::Message as WebsocketMessage
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-//use reqwest::Client as HTTPClient;
+use reqwest::Client as HTTPClient;
 use serde_json::{from_str as from_json, to_string as to_json};
-use std::time::Duration;
+use std::{future::{Future, ready}, pin::Pin, time::Duration};
 use tokio::{
 	join, select,
 	sync::mpsc::{Receiver, Sender, channel},
@@ -22,14 +26,16 @@ use tokio::{
 
 pub struct Client<'u, 't> {
 	addresses: (&'u str, &'u str),
-	token: &'t str
+	token: &'t str,
+	http_client: HTTPClient
 }
 
 impl<'u, 't> Client<'u, 't> {
 	pub fn new(token: &'t str) -> Self {
 		Self {
 			addresses: ("api.hiven.io", "swarm-dev.hiven.io"),
-			token: token
+			token: token,
+			http_client: HTTPClient::new()
 		}
 	}
 
@@ -42,6 +48,34 @@ impl<'u, 't> Client<'u, 't> {
 
 		gate_keeper.start_gateway().await;
 	}
+
+	pub async fn send_message<R>(&self, room: R, content: String)
+			where R: Into<u64> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::MessageSend {
+				channel_id: room.into()
+			},
+			body: RequestBodyInfo::MessageSend {
+				content: content
+			}
+		}, self.addresses.0).await;
+	}
+}
+
+async fn execute_request<'a>(client: &HTTPClient, request: RequestInfo,
+		base_url: &'a str) {
+	let path = format!("https://{}/v1{}", base_url, request.path.path());
+	let http_request = client.request(request.body.method(), &path)
+		.header("authorization", request.token);
+
+	let http_request = if request.body.method() != "GET" {
+		http_request.header("content-type", "application/json")
+			.body(to_json(&request.body).unwrap()) // Remove unwrap().
+	} else {http_request};
+	
+	// Remove unwrap()s.
+	http_request.send().await.unwrap().error_for_status().unwrap();
 }
 
 pub struct GateKeeper<'c, 'u, 't, E>
@@ -80,7 +114,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 					WebsocketMessage::Text(frame) => match from_json::<Frame>(&frame) {
 						Ok(frame) => sender.send(frame).await.unwrap(),
 						// Uncomment to show events that can't yet be parsed.
-						Err(err) => println!("{:?}: {}", err, frame),
+						// Err(err) => println!("{:?}: {}", err, frame),
 						_ => ()
 					},
 					_ => unimplemented!("B") // Remove unimplemented!().
@@ -122,13 +156,13 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				match receiver.next().await.unwrap() {
 					Frame::Event(event) => match event {
 						OpCodeEvent::InitState(data) =>
-							self.event_handler.on_connect(data),
+							self.event_handler.on_connect(&self.client, data).await,
 						OpCodeEvent::HouseJoin(data) =>
-							self.event_handler.on_house_join(data),
+							self.event_handler.on_house_join(&self.client, data).await,
 						OpCodeEvent::TypingStart(data) =>
-							self.event_handler.on_typing(data),
+							self.event_handler.on_typing(&self.client, data).await,
 						OpCodeEvent::MessageCreate(data) =>
-							self.event_handler.on_message(data)
+							self.event_handler.on_message(&self.client, data).await
 					},
 					_ => unimplemented!() // Remove unimplemented!().
 				}
@@ -140,8 +174,23 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 }
 
 pub trait EventHandler {
-	fn on_connect(&self, _event: EventInitState) {/* NoOp */}
-	fn on_house_join(&self, _event: House) {/* NoOp */}
-	fn on_typing(&self, _event: EventTypingStart) {/* NoOp */}
-	fn on_message(&self, _event: Message) {/* NoOp */}
+	fn on_connect<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventInitState) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
+		// NoOp
+		Box::pin(ready(()))
+	}
+
+	fn on_house_join<'c>(&self, _client: &'c Client<'c, 'c>, _event: House) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
+		// NoOp
+		Box::pin(ready(()))
+	}
+
+	fn on_typing<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventTypingStart) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
+		// NoOp
+		Box::pin(ready(()))
+	}
+
+	fn on_message<'c>(&self, _client: &'c Client<'c, 'c>, _event: Message) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
+		// NoOp
+		Box::pin(ready(()))
+	}
 }
