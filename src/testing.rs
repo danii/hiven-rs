@@ -21,7 +21,7 @@ pub async fn do_sex() {
 		println!("incoming: {}", response);
 
 		if response.starts_with("{\"op\":1") {
-			socket.send(Message::text("{\"op\":2,\"d\":{\"token\":\"token\"}}")).await;
+			socket.send(Message::text("{\"op\":2,\"d\":{\"token\":\"token\"}}")).await.unwrap();
 			println!("sent op 2");
 		}
 	}
@@ -31,9 +31,9 @@ pub async fn do_sex() {
 pub async fn send_message(token: String, channel_id: u64, content: String) {
 	let client = HTTPClient::new();
 	let url = format!("https://api.hiven.io/v1/rooms/{}/messages", channel_id);
-	let request = client.post(&url)
+	client.post(&url)
 		.header("content-type", "application/json")
 		.header("authorization", token)
 		.body(format!("{{\"content\":\"{}\"}}", content))
-		.send().await;
+		.send().await.unwrap();
 }
