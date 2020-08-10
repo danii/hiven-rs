@@ -1,9 +1,9 @@
 use self::super::gateway::{Frame, HelloOpCode, LoginOpCode};
 use async_tungstenite::{tokio::connect_async as websocket_async, tungstenite::Message};
 use futures::{sink::SinkExt, stream::StreamExt};
-use reqwest::Client as HTTPClient;
+//use reqwest::Client as HTTPClient;
 use serde_json::{from_str as from_json, to_string as to_json};
-use std::{pin::Pin, time::Duration};
+use std::time::Duration;
 use tokio::{join, select, sync::mpsc::{Receiver, Sender, channel}, time::delay_for as sleep};
 
 pub struct Client<'u, 't> {
@@ -66,11 +66,12 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 					Message::Text(frame) => {
 						println!("{}", frame);
 						let a = from_json::<Frame>(&frame);
+						println!("{:?}", a);
 						if let Ok(frame) = a {
 							sender.send(frame.into_owned()).await.unwrap();
 						}
 					},
-					_ => unimplemented!() // Remove unimplemented!().
+					_ => unimplemented!("B") // Remove unimplemented!().
 				},
 				// Remove unwrap()s.
 				frame = outgoing_frame => socket.send(Message::Text(
@@ -95,7 +96,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 					sender.send(Some(Frame::HeartBeatAck)).await.unwrap();
 				}
 			}
-		} else {unimplemented!()}; // Remove unimplemented!().
+		} else {unimplemented!("A")}; // Remove unimplemented!().
 
 		let frame = Frame::Login(LoginOpCode {token: self.client.token.to_owned()});
 		sender.send(Some(frame)).await;
