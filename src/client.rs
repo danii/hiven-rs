@@ -12,17 +12,28 @@ use self::super::{
 };
 use async_tungstenite::{
 	tokio::connect_async as websocket_async,
-	tungstenite::Message as WebsocketMessage
+	tungstenite::{
+		Message as WebsocketMessage,
+		protocol::frame::CloseFrame
+	}
 };
 use futures::{sink::SinkExt, stream::StreamExt};
 use reqwest::Client as HTTPClient;
 use serde_json::{from_str as from_json, to_string as to_json};
-use std::{future::{Future, ready}, pin::Pin, time::Duration};
+use std::{
+	fmt::Debug,
+	future::{Future, ready},
+	pin::Pin,
+	result::Result as STDResult,
+	time::Duration
+};
 use tokio::{
 	join, select,
-	sync::{Notify, mpsc::{Receiver, Sender, channel}},
-	time::{delay_for as sleep, timeout}
+	sync::{Notify, mpsc::{Receiver, Sender, channel, error::SendError}},
+	time::timeout
 };
+
+type Result<T> = STDResult<T, Error>;
 
 pub struct Client<'u, 't> {
 	addresses: (&'u str, &'u str),
@@ -39,14 +50,14 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
-	pub async fn start_gateway<E>(&self, event_handler: E)
+	pub async fn start_gateway<E>(&self, event_handler: E) -> Result<()>
 			where E: EventHandler {
 		let gate_keeper = GateKeeper {
 			client: self,
 			event_handler: event_handler
 		};
 
-		gate_keeper.start_gateway().await;
+		gate_keeper.start_gateway().await
 	}
 
 	pub async fn send_message<R>(&self, room: R, content: String)
@@ -86,22 +97,23 @@ pub struct GateKeeper<'c, 'u, 't, E>
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler{
-	pub async fn start_gateway(&self) -> Result<(), ()> {
+	pub async fn start_gateway(&self) -> Result<()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
 
-		let a = join!(
+		match join!(
 			self.manage_gateway(incoming_send, outgoing_receive),
 			self.listen_gateway(incoming_receive, outgoing_send)
-		);
-
-		println!("{:?}", a);
-
-		Err(())
+		) {
+			(Ok(()), Ok(())) => Ok(()),
+			(Err(err), Ok(())) => Err(err),
+			(Ok(()), Err(err)) => Err(err),
+			(Err(_), Err(err)) => Err(err)
+		}
 	}
 
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
-			mut receiver: Receiver<Option<Frame>>) -> Result<(), ()> {
+			mut receiver: Receiver<Option<Frame>>) -> Result<()> {
 		let url = format!("wss://{}/socket", self.client.addresses.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
@@ -122,7 +134,9 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						// Err(err) => println!("{:?}: {}", err, frame),
 						_ => ()
 					},
-					_ => return Err(()) // Remove unimplemented!().
+					WebsocketMessage::Close(close_data) => return Err(Error::socket_close(close_data)),
+					frame @ _ => return Err(Error::expectation_failed(
+						"Text or Close frames only", frame))
 				},
 				// Remove unwrap()s.
 				frame = outgoing_frame => socket.send(WebsocketMessage::Text(
@@ -132,7 +146,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	}
 
 	async fn listen_gateway(&self, mut receiver: Receiver<Frame>,
-			mut sender: Sender<Option<Frame>>) -> Result<(), ()> {
+			mut sender: Sender<Option<Frame>>) -> Result<()> {
 		let notify = Notify::new();
 
 		let heart_beat = match receiver.next().await {
@@ -147,13 +161,14 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 					loop {
 						// Remove unwrap().
 						if let Ok(()) = timeout(duration, notify.notified()).await
-							{return Result::<(), ()>::Ok(())}
+							{return Result::Ok(())}
 						sender.send(Some(Frame::HeartBeat)).await.unwrap();
 					}
 				}
 			},
 			// Expectation failed.
-			Some(frame) => return Err(()),
+			Some(frame) => return Err(Error::expectation_failed(
+				"Frame::Hello(...)", frame)),
 			// The channel died, exit gracefully.
 			None => return Ok(())
 		};
@@ -161,7 +176,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		let login_frame = Frame::Login(OpCodeLogin {
 			token: self.client.token.to_owned()
 		});
-		sender.send(Some(login_frame)).await.map_err(|_| ()); // Remove unwrap().
+		sender.send(Some(login_frame)).await?;
 
 		let listener = async {
 			let result = loop {
@@ -177,7 +192,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 							self.event_handler.on_message(&self.client, data).await
 					},
 					// The channel died, exit gracefully.
-					None => break Result::<(), ()>::Ok(()),
+					None => break Result::Ok(()),
 					_ => unimplemented!() // Remove unimplemented!().
 				}
 			};
@@ -192,6 +207,36 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 			(Ok(()), Err(err)) => Err(err),
 			(Err(_), Err(err)) => Err(err)
 		}
+	}
+}
+
+#[derive(Debug)]
+pub enum Error {
+	ExpectationFailed(&'static str, String),
+	SocketClose(Option<CloseFrame<'static>>),
+	InternalChannelError(String)
+}
+
+impl Error {
+	pub fn expectation_failed<S>(expected: &'static str, got: S) -> Self
+			where S: Debug {
+		Self::ExpectationFailed(expected, format!("{:?}", got))
+	}
+
+	pub fn socket_close(close_data: Option<CloseFrame<'static>>) -> Self {
+		Self::SocketClose(close_data)
+	}
+
+	pub fn send_error<T>(error: SendError<T>) -> Self
+			where T: Debug {
+		Self::InternalChannelError(format!("{:?}", error))
+	}
+}
+
+impl<T> From<SendError<T>> for Error
+		where T: Debug {
+	fn from(error: SendError<T>) -> Self {
+		Self::send_error(error)
 	}
 }
 
