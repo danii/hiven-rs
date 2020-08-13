@@ -25,16 +25,25 @@ use tokio::{
 };
 
 pub struct Client<'u, 't> {
-	addresses: (&'u str, &'u str),
 	token: &'t str,
+	domains: (&'u str, &'u str),
 	http_client: HTTPClient
 }
 
 impl<'u, 't> Client<'u, 't> {
 	pub fn new(token: &'t str) -> Self {
 		Self {
-			addresses: ("api.hiven.io", "swarm-dev.hiven.io"),
 			token: token,
+			domains: ("api.hiven.io", "swarm-dev.hiven.io"),
+			http_client: HTTPClient::new()
+		}
+	}
+
+	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
+			Self {
+		Self {
+			token: token,
+			domains: (api_base, gateway_base),
 			http_client: HTTPClient::new()
 		}
 	}
@@ -59,7 +68,7 @@ impl<'u, 't> Client<'u, 't> {
 			body: RequestBodyInfo::MessageSend {
 				content: content
 			}
-		}, self.addresses.0).await;
+		}, self.domains.0).await;
 	}
 }
 
@@ -98,7 +107,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
 			mut receiver: Receiver<Option<Frame>>) {
-		let url = format!("wss://{}/socket", self.client.addresses.1);
+		let url = format!("wss://{}/socket", self.client.domains.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
 		loop {
