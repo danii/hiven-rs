@@ -24,6 +24,31 @@ use tokio::{
 	time::delay_for as sleep
 };
 
+/// Authentication of a user on hiven.
+///
+/// With authentication of a user, you can call API endpoints as that user, or
+/// start a gateway connection.
+///
+/// Getting Your Token
+/// ------------------
+/// To be able to authenticate a user, you must have a token. To get a token of
+/// a user, you must be logged in as them in the browser. These are the steps
+/// to get your token if you are logged in:
+/// - Go to [app.hiven.io](https://app.hiven.io/)
+/// - Enter any room that you have permission to speak in
+/// - Press CTRL+SHIFT+I, opening up Developer Tools
+/// - Go to the network tab on the Developer Tools window
+/// - Start typing in the room
+/// - Select the new `typing` request that appears. If two show up, select
+/// 	the one with a 200 status code
+/// - Look for the `authorization` header under Request Headers, under Headers
+/// - The long string to the right is your token
+///
+/// Please remember, tokens should be treated exactly like passwords. **Never
+/// give out your token, and if you do, only give it to people you would trust
+/// with your password.** Another thing to keep in mind; it's always good
+/// etiquette to automate seperate accounts, dedicated for automation, rather
+/// than your own.
 pub struct Client<'u, 't> {
 	addresses: (&'u str, &'u str),
 	token: &'t str,
@@ -39,6 +64,41 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
+	/// Takes control of this thread, starting a connection to the gateway and
+	/// dispatching gateway events asynchronously.
+	///
+	/// This method takes an event handler to handle all gateway events. Gateway
+	/// events you do not implement will default to a method that does nothing
+	/// (NoOp). Due to limitations with traits (and the async_trait macro), event
+	/// handlers are not marked as `async`, but are asynchronous in spirit.
+	/// Implementing an event listener can be done like this...
+	/// ```rust
+	/// use hiven_rs::{client::{Client, EventHandler}, data::Message};
+	/// use std::{future::Future, pin::Pin};
+	///
+	/// // ...
+	///
+	/// # struct MyEventHandler;
+	/// #
+	/// impl EventHandler for MyEventHandler {
+	/// 	fn on_message<'c>(&self, client: &'c Client, event: Message) ->
+	/// 			Pin<Box<dyn Future<Output = ()> + 'c>> {
+	/// 		Box::pin(async move {
+	/// 			// Asynchronous code goes here.
+	/// 		})
+	/// 	}
+	/// }
+	/// ```
+	///
+	/// This method currently is not expected to return ever, unless during panic
+	/// unwinding, and it's return value should be treated as `!` (the never
+	/// type).
+	//
+	// Notes For Next Minor Version
+	// ----------------------------
+	// In the next minor version, this method will be renamed and it's signature
+	// will be changed to support returning of Errors, or a unit, with
+	// the introduction of a stop function.
 	pub async fn start_gateway<E>(&self, event_handler: E)
 			where E: EventHandler {
 		let gate_keeper = GateKeeper {
@@ -78,6 +138,10 @@ async fn execute_request<'a>(client: &HTTPClient, request: RequestInfo,
 	http_request.send().await.unwrap().error_for_status().unwrap();
 }
 
+// These lifetimes and this generic are a special set of generics, they are able
+// to describe the person reading them with 100% accuracy.
+//
+// I promise this wasn't intended, but now I love it.
 pub struct GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub client: &'c Client<'u, 't>,
