@@ -1,11 +1,11 @@
 use async_trait::async_trait;
-use hiven_rs::{Client, EventHandler, data::{House, Message}, gateway::EventInitState};
+use hiven_rs::{Client, EventHandler, client::Error as ClientError, data::{House, Message}, gateway::EventInitState};
 use tokio;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), ClientError> {
 	let client = Client::new("token");
-	client.start_gateway(MyEventHandler).await;
+	client.start_gateway(MyEventHandler).await
 }
 
 struct MyEventHandler;
