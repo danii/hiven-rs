@@ -62,6 +62,8 @@ pub struct Client<'u, 't> {
 }
 
 impl<'u, 't> Client<'u, 't> {
+	/// Creates a new client with an authentication token. Uses the official
+	/// hiven.io servers.
 	pub fn new(token: &'t str) -> Self {
 		Self {
 			token: token,
@@ -70,6 +72,8 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
+	/// Creates a new client with an authentication token, allows you to specify
+	/// a base domain for the api and gateway.
 	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
 			Self {
 		Self {
