@@ -17,7 +17,13 @@ use async_tungstenite::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use reqwest::Client as HTTPClient;
 use serde_json::{from_str as from_json, to_string as to_json};
-use std::{future::{Future, ready}, pin::Pin, time::Duration};
+use std::{
+	future::{Future, ready},
+	pin::Pin,
+	sync::Arc,
+	thread::{JoinHandle, spawn},
+	time::Duration
+};
 use tokio::{
 	join, select,
 	sync::mpsc::{Receiver, Sender, channel},
@@ -48,13 +54,15 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
+	pub async fn new_gate_keeper<'c, E>(&'c self, event_handler: E) ->
+			GateKeeper<'c, 'u, 't, E>
+				where E: EventHandler {
+		GateKeeper::new(self, event_handler)
+	}
+
 	pub async fn start_gateway<E>(&self, event_handler: E)
 			where E: EventHandler {
-		let gate_keeper = GateKeeper {
-			client: self,
-			event_handler: event_handler
-		};
-
+		let gate_keeper = GateKeeper::new(self, event_handler);
 		gate_keeper.start_gateway().await;
 	}
 
@@ -69,6 +77,20 @@ impl<'u, 't> Client<'u, 't> {
 				content: content
 			}
 		}, self.domains.0).await;
+	}
+}
+
+impl Client<'static, 'static> {
+	pub fn start_gateway_later<E>(self: Arc<Self>, event_handler: E) ->
+			JoinHandle<()>
+				where E: EventHandler + 'static {
+		spawn(move || {
+			let gate_keeper = GateKeeper::new(&self, event_handler);
+			let mut runtime = tokio::runtime::Runtime::new().unwrap();
+			runtime.block_on(async {
+				gate_keeper.start_gateway().await;
+			});
+		})
 	}
 }
 
@@ -94,7 +116,14 @@ pub struct GateKeeper<'c, 'u, 't, E>
 }
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
-		where E: EventHandler{
+		where E: EventHandler {
+	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
+		Self {
+			client: client,
+			event_handler: event_handler
+		}
+	}
+
 	pub async fn start_gateway(&self) {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
@@ -182,7 +211,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	}
 }
 
-pub trait EventHandler {
+pub trait EventHandler: Send {
 	fn on_connect<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventInitState) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
 		// NoOp
 		Box::pin(ready(()))
