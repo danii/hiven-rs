@@ -170,7 +170,7 @@ impl Client<'static, 'static> {
 			let gate_keeper = GateKeeper::new(&self, event_handler);
 			let mut runtime = tokio::runtime::Runtime::new().unwrap();
 			runtime.block_on(async {
-				gate_keeper.start_gateway().await;
+				gate_keeper.start_gateway().await.unwrap();
 			});
 		})
 	}
