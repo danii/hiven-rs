@@ -20,8 +20,8 @@ use serde_json::{from_str as from_json, to_string as to_json};
 use std::{future::{Future, ready}, pin::Pin, time::Duration};
 use tokio::{
 	join, select,
-	sync::mpsc::{Receiver, Sender, channel},
-	time::delay_for as sleep
+	sync::{Notify, mpsc::{Receiver, Sender, channel}},
+	time::{delay_for as sleep, timeout}
 };
 
 pub struct Client<'u, 't> {
@@ -86,18 +86,22 @@ pub struct GateKeeper<'c, 'u, 't, E>
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler{
-	pub async fn start_gateway(&self) {
+	pub async fn start_gateway(&self) -> Result<(), ()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
 
-		join!(
+		let a = join!(
 			self.manage_gateway(incoming_send, outgoing_receive),
 			self.listen_gateway(incoming_receive, outgoing_send)
 		);
+
+		println!("{:?}", a);
+
+		Err(())
 	}
 
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
-			mut receiver: Receiver<Option<Frame>>) {
+			mut receiver: Receiver<Option<Frame>>) -> Result<(), ()> {
 		let url = format!("wss://{}/socket", self.client.addresses.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
@@ -112,12 +116,13 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				frame = incoming_frame => match frame.unwrap().unwrap() {
 					// Remove unwrap()s.
 					WebsocketMessage::Text(frame) => match from_json::<Frame>(&frame) {
+						
 						Ok(frame) => sender.send(frame).await.unwrap(),
 						// Uncomment to show events that can't yet be parsed.
 						// Err(err) => println!("{:?}: {}", err, frame),
 						_ => ()
 					},
-					_ => unimplemented!("B") // Remove unimplemented!().
+					_ => return Err(()) // Remove unimplemented!().
 				},
 				// Remove unwrap()s.
 				frame = outgoing_frame => socket.send(WebsocketMessage::Text(
@@ -127,34 +132,41 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	}
 
 	async fn listen_gateway(&self, mut receiver: Receiver<Frame>,
-			mut sender: Sender<Option<Frame>>) {
-		// Remove unwrap().
-		let incoming_frame = receiver.next().await.unwrap();
+			mut sender: Sender<Option<Frame>>) -> Result<(), ()> {
+		let notify = Notify::new();
 
-		let heart_beat =
-			if let Frame::Hello(OpCodeHello {heart_beat}) = incoming_frame {
-				let mut sender = sender.clone();
-				let duration = Duration::from_millis(heart_beat.into());
-				async move {
+		let heart_beat = match receiver.next().await {
+			// We got what we needed.
+			Some(Frame::Hello(OpCodeHello {heart_beat})) => {
+				let bag = (sender.clone(), Duration::from_millis(heart_beat.into()));
+
+				// Set heart_beat to our heart beat future.
+				async {
+					let (mut sender, duration) = bag;
+
 					loop {
 						// Remove unwrap().
-						sleep(duration).await;
+						if let Ok(()) = timeout(duration, notify.notified()).await
+							{return Result::<(), ()>::Ok(())}
 						sender.send(Some(Frame::HeartBeat)).await.unwrap();
 					}
 				}
-			} else {
-				// Unexpected response...
-				unimplemented!("A"); // Remove unimplemented!().
-			};
+			},
+			// Expectation failed.
+			Some(frame) => return Err(()),
+			// The channel died, exit gracefully.
+			None => return Ok(())
+		};
 
-		let frame = Frame::Login(OpCodeLogin {token: self.client.token.to_owned()});
-		sender.send(Some(frame)).await.unwrap(); // Remove unwrap().
+		let login_frame = Frame::Login(OpCodeLogin {
+			token: self.client.token.to_owned()
+		});
+		sender.send(Some(login_frame)).await.map_err(|_| ()); // Remove unwrap().
 
 		let listener = async {
-			loop {
-				// Remove unwrap().
-				match receiver.next().await.unwrap() {
-					Frame::Event(event) => match event {
+			let result = loop {
+				match receiver.next().await {
+					Some(Frame::Event(event)) => match event {
 						OpCodeEvent::InitState(data) =>
 							self.event_handler.on_connect(&self.client, data).await,
 						OpCodeEvent::HouseJoin(data) =>
@@ -164,12 +176,22 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						OpCodeEvent::MessageCreate(data) =>
 							self.event_handler.on_message(&self.client, data).await
 					},
+					// The channel died, exit gracefully.
+					None => break Result::<(), ()>::Ok(()),
 					_ => unimplemented!() // Remove unimplemented!().
 				}
-			}
+			};
+
+			notify.notify();
+			result
 		};
 
-		join!(heart_beat, listener);
+		match join!(heart_beat, listener) {
+			(Ok(()), Ok(())) => Ok(()),
+			(Err(err), Ok(())) => Err(err),
+			(Ok(()), Err(err)) => Err(err),
+			(Err(_), Err(err)) => Err(err)
+		}
 	}
 }
 
