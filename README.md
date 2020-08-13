@@ -13,8 +13,8 @@ hiven<span>.</span>rs' Feature Set
 	- [x] Message receiving
 	- [ ] Message editing
 	- [ ] Message deleting
-	- [ ] Typing sending
-	- [ ] Typing receiving
+	- [x] Typing sending
+	- [x] Typing receiving
 	- [ ] House building
 	- [ ] House joining
 	- [x] House (data) receiving

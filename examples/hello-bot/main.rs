@@ -1,6 +1,6 @@
 use hiven_rs::{Client, EventHandler, data::{House, Message}, gateway::EventInitState};
 use std::{future::Future, pin::Pin};
-use tokio;
+use tokio::time::delay_for;
 
 #[tokio::main]
 async fn main() {
@@ -39,6 +39,9 @@ impl EventHandler for MyEventHandler {
 			if event.content.starts_with("$") {match &event.content[1..] {
 				"hello" => {
 					println!("I'm going to say hello back!");
+
+					client.trigger_typing(event.room_id).await;
+					delay_for(std::time::Duration::from_millis(1000)).await;
 					client.send_message(event.room_id, "Hello!".to_owned()).await
 				},
 				_ => ()

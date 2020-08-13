@@ -138,6 +138,17 @@ impl<'u, 't> Client<'u, 't> {
 			}
 		}, self.domains.0).await;
 	}
+
+	pub async fn trigger_typing<R>(&self, room: R)
+			where R: Into<u64> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::TypingTrigger {
+				channel_id: room.into()
+			},
+			body: RequestBodyInfo::TypingTrigger {}
+		}, self.domains.0).await;
+	}
 }
 
 impl Client<'static, 'static> {

@@ -10,17 +10,22 @@ pub struct RequestInfo {
 pub enum PathInfo {
 	MessageSend {
 		channel_id: u64
+	},
+	TypingTrigger {
+		channel_id: u64
 	}
 }
 
 impl PathInfo {
 	pub fn path(&self) -> String {
 		match self {
-			Self::MessageSend {channel_id, ..} =>
+			Self::MessageSend {channel_id} =>
 				format!("/rooms/{}/messages", channel_id),
 			/*Self::MessageEdit {channel_id, message_id, ..} |
 			Self::MessageDelete {channel_id, message_id, ..} =>
 				format!("/rooms/{}/messages/{}", channel_id, message_id)*/
+			Self::TypingTrigger {channel_id} =>
+				format!("/rooms/{}/typing", channel_id)
 		}
 	}
 }
@@ -30,13 +35,14 @@ impl PathInfo {
 pub enum RequestBodyInfo {
 	MessageSend {
 		content: String
-	}
+	},
+	TypingTrigger {}
 }
 
 impl RequestBodyInfo {
 	pub fn method(&self) -> Method {
 		match self {
-			Self::MessageSend {..} => Method::POST
+			Self::MessageSend {..} | Self::TypingTrigger {} => Method::POST
 		}
 	}
 }
