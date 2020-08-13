@@ -10,6 +10,7 @@ use self::super::{
 		RequestInfo, RequestBodyInfo
 	}
 };
+use async_trait::async_trait;
 use async_tungstenite::{
 	tokio::connect_async as websocket_async,
 	tungstenite::Message as WebsocketMessage
@@ -17,7 +18,7 @@ use async_tungstenite::{
 use futures::{sink::SinkExt, stream::StreamExt};
 use reqwest::Client as HTTPClient;
 use serde_json::{from_str as from_json, to_string as to_json};
-use std::{future::{Future, ready}, pin::Pin, time::Duration};
+use std::time::Duration;
 use tokio::{
 	join, select,
 	sync::mpsc::{Receiver, Sender, channel},
@@ -182,24 +183,17 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	}
 }
 
-pub trait EventHandler {
-	fn on_connect<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventInitState) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
-		// NoOp
-		Box::pin(ready(()))
-	}
+#[async_trait]
+pub trait EventHandler: std::marker::Sync {
+	async fn on_connect(&self, _client: &'_ Client<'_, '_>,
+		_event: EventInitState) {/* NoOp */}
 
-	fn on_house_join<'c>(&self, _client: &'c Client<'c, 'c>, _event: House) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
-		// NoOp
-		Box::pin(ready(()))
-	}
+	async fn on_house_join(&self, _client: &'_ Client<'_, '_>, _event: House)
+		{/* NoOp */}
 
-	fn on_typing<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventTypingStart) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
-		// NoOp
-		Box::pin(ready(()))
-	}
+	async fn on_typing(&self, _client: &'_ Client<'_, '_>,
+		_event: EventTypingStart) {/* NoOp */}
 
-	fn on_message<'c>(&self, _client: &'c Client<'c, 'c>, _event: Message) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
-		// NoOp
-		Box::pin(ready(()))
-	}
+	async fn on_message(&self, _client: &'_ Client<'_, '_>, _event: Message)
+		{/* NoOp */}
 }

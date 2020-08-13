@@ -11,6 +11,7 @@ keywords = ["hiven", "api", "gateway"]
 categories = ["api-bindings"]
 
 [dependencies]
+async-trait = "0.1.37"
 async-tungstenite = {version = "0.8.0", features = ["tokio-runtime", "tokio-native-tls"]}
 futures = "0.3"
 reqwest = "0.10.7"
