@@ -84,7 +84,7 @@ impl<'u, 't> Client<'u, 't> {
 	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
 			Self {
 		Self {
-			token: token,
+			token,
 			domains: (api_base, gateway_base),
 			http_client: HTTPClient::new()
 		}
@@ -144,9 +144,7 @@ impl<'u, 't> Client<'u, 't> {
 			path: PathInfo::MessageSend {
 				channel_id: room.into()
 			},
-			body: RequestBodyInfo::MessageSend {
-				content: content
-			}
+			body: RequestBodyInfo::MessageSend {content}
 		}, self.domains.0).await;
 	}
 
@@ -176,8 +174,8 @@ impl Client<'static, 'static> {
 	}
 }
 
-async fn execute_request<'a>(client: &HTTPClient, request: RequestInfo,
-		base_url: &'a str) {
+async fn execute_request(client: &HTTPClient, request: RequestInfo,
+		base_url: &str) {
 	let path = format!("https://{}/v1{}", base_url, request.path.path());
 	let http_request = client.request(request.body.method(), &path)
 		.header("authorization", request.token);
@@ -204,10 +202,7 @@ pub struct GateKeeper<'c, 'u, 't, E>
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
-		Self {
-			client: client,
-			event_handler: event_handler
-		}
+		Self {client, event_handler}
 	}
 
 	pub async fn start_gateway(&self) -> Result<()> {
@@ -248,7 +243,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						_ => ()
 					},
 					WebsocketMessage::Close(close_data) => return Err(Error::socket_close(close_data)),
-					frame @ _ => return Err(Error::expectation_failed(
+					frame => return Err(Error::expectation_failed(
 						"Text or Close frames only", frame))
 				},
 				// Remove unwrap()s.
