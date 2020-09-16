@@ -52,6 +52,30 @@ impl Serialize for Frame {
 
 struct FrameVisitor;
 
+impl FrameVisitor {
+	/// Takes an event string and deserializes map's next value into the
+	/// corresponding [OpCodeEvent](enum.OpCodeEvent.html).
+	fn deserialize_event<'d, A>(&self, event: &str, map: &mut A)
+			-> Result<OpCodeEvent, A::Error> where A: MapAccess<'d> {
+		match event {
+			// Event deserialization...
+
+			// EventInitState...
+			"INIT_STATE" => Ok(OpCodeEvent::InitState(map.next_value()?)),
+			// EventHouseJoin...
+			"HOUSE_JOIN" => Ok(OpCodeEvent::HouseJoin(map.next_value()?)),
+			// EventTypingStart...
+			"TYPING_START" => Ok(OpCodeEvent::TypingStart(map.next_value()?)),
+			// EventMessageCreate...
+			"MESSAGE_CREATE" => Ok(OpCodeEvent::MessageCreate(map.next_value()?)),
+
+			// Invalid event...
+			event => Err(DeserializeError::invalid_value(Unexpected::Str(event),
+				&"valid event"))
+		}
+	}
+}
+
 impl<'d> Visitor<'d> for FrameVisitor {
 	type Value = Frame;
 
@@ -59,6 +83,8 @@ impl<'d> Visitor<'d> for FrameVisitor {
 		write!(formatter, "a hiven.io gateway websocket frame")
 	}
 
+	/// Deserializes a serde map structure into a
+	/// [Frame](struct.FrameVisitor.html).
 	// This function is quite a bit of spaghetti code, but it should
 	// deserialize all hiven opcodes. To aid in reading, I've plastered comments
 	// everywhere, which should (hopefully) make it easier to understand.
@@ -79,12 +105,16 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				op_code = Some(map.next_value()?);
 				break
 			},
-			"e" => if event.is_none() {event = Some(map.next_value()?)}
-				else {return Err(DeserializeError::duplicate_field("e"))},
+			"e" => if event.is_none() {
+				event = Some(map.next_value()?)
+			} else {
+				return Err(DeserializeError::duplicate_field("e"))
+			},
 			"d" => {
 				data = Some(map.next_value()?);
 				break
 			},
+
 			_ => return Err(A::Error::unknown_field(key, &FIELDS))
 		}}
 
@@ -100,29 +130,13 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				"e" => if event.is_none() {event = Some(map.next_value()?)}
 					else {return Err(DeserializeError::duplicate_field("e"))},
 				"d" => if result.is_none() && data.is_none() {match op_code {
-					// OpCode deserialization...
+					//// OpCode deserialization...
 
 					// OpCodeEvent...
-					0 => if let Some(event) = event {result = Some(Frame::Event(
-						match event {
-							// "op" was 0 and "e" was found before "d".
-							// No need to use UndeserializedAny.
-							// Event deserialization...
-
-							// EventInitState...
-							"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
-							// EventHouseJoin...
-							"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
-							// EventTypingStart...
-							"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
-							// EventMessageCreate...
-							"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
-
-							// Invalid event...
-							event => return Err(DeserializeError::invalid_value(
-								Unexpected::Str(event), &"valid event"))
-						}
-					))} else {
+					0 => if let Some(event) = event {
+						let value = self.deserialize_event(event, &mut map)?;
+						result = Some(Frame::Event(value))
+					} else {
 						data = Some(map.next_value()?);
 						break
 					},
@@ -136,7 +150,10 @@ impl<'d> Visitor<'d> for FrameVisitor {
 					// Unknown operation code...
 					_ => return Err(DeserializeError::invalid_value(
 						Unexpected::Unsigned(op_code.into()), &"valid opcode"))
-				}} else {return Err(DeserializeError::duplicate_field("d"))},
+				}} else {
+					return Err(DeserializeError::duplicate_field("d"))
+				},
+
 				_ => return Err(A::Error::unknown_field(key, &[]))
 			}}
 
@@ -144,22 +161,7 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				// "op" was 0 and "d" was found before "e".
 				// We must use UndeserializedAny.
 				let event = event.unwrap();
-				let result: OpCodeEvent = match event {
-					// Event deserialization...
-
-					// EventInitState...
-					"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
-					// EventHouseJoin...
-					"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
-					// EventTypingStart...
-					"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
-					// EventMessageCreate...
-					"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
-
-					// Invalid event...
-					event => return Err(DeserializeError::invalid_value(
-						Unexpected::Str(event), &"valid event"))
-				};
+				let result = self.deserialize_event(event, &mut map)?;
 
 				Ok(Frame::Event(result))
 			} else {
@@ -168,7 +170,7 @@ impl<'d> Visitor<'d> for FrameVisitor {
 					Some(result) => result,
 					// Operation codes that don't have data...
 					None => match op_code {
-						// OpCode deserialization...
+						//// OpCode deserialization...
 
 						// OpCodeHeartBeat...
 						3 => Frame::HeartBeat,
@@ -196,27 +198,15 @@ impl<'d> Visitor<'d> for FrameVisitor {
 				// Ignore sequence, for now...
 				"seq" => {map.next_value::<UndeserializedAny>()?;},
 				"op" => if result.is_none() && !op_zero {match map.next_value::<u8>()? {
-					// OpCode deserialization...
+					//// OpCode deserialization...
 
 					// OpCodeEvent...
-					0 => if let Some(event) = event {result = Some(Frame::Event(
-						match event {
-							// Event deserialization...
-
-							// EventInitState...
-							"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
-							// EventHouseJoin...
-							"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
-							// EventTypingStart...
-							"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
-							// EventMessageCreate...
-							"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
-
-							// Invalid event...
-							event => return Err(DeserializeError::invalid_value(
-								Unexpected::Str(event), &"valid event"))
-						}
-					))} else {op_zero = true},
+					0 => if let Some(event) = event {
+						let value = self.deserialize_event(event, &mut map)?;
+						result = Some(Frame::Event(value))
+					} else {
+						op_zero = true
+					},
 					// OpCodeHello...
 					1 => result = Some(Frame::Hello(data_into()?)),
 
@@ -225,25 +215,19 @@ impl<'d> Visitor<'d> for FrameVisitor {
 					// Unknown operation code...
 					op_code => return Err(DeserializeError::invalid_value(
 						Unexpected::Unsigned(op_code.into()), &"valid opcode"))
-				}} else {return Err(DeserializeError::duplicate_field("op"))},
-				"e" => if op_zero {result = Some(Frame::Event(match map.next_value()? {
-					// Event deserialization...
-
-					// EventInitState...
-					"INIT_STATE" => OpCodeEvent::InitState(map.next_value()?),
-					// EventHouseJoin...
-					"HOUSE_JOIN" => OpCodeEvent::HouseJoin(map.next_value()?),
-					// EventTypingStart...
-					"TYPING_START" => OpCodeEvent::TypingStart(map.next_value()?),
-					// EventMessageCreate...
-					"MESSAGE_CREATE" => OpCodeEvent::MessageCreate(map.next_value()?),
-
-					// Invalid event...
-					event => return Err(DeserializeError::invalid_value(
-						Unexpected::Str(event), &"valid event"))
-				}))} else if event.is_none() {event = Some(map.next_value()?)}
-				else {return Err(DeserializeError::duplicate_field("e"))},
+				}} else {
+					return Err(DeserializeError::duplicate_field("op"))
+				},
+				"e" => if op_zero {
+					let value = self.deserialize_event(map.next_value()?, &mut map)?;
+					result = Some(Frame::Event(value))
+				} else if event.is_none() {
+					event = Some(map.next_value()?)
+				} else {
+					return Err(DeserializeError::duplicate_field("e"))
+				},
 				"d" => return Err(DeserializeError::duplicate_field("d")),
+
 				_ => return Err(A::Error::unknown_field(key, &[]))
 			}}
 
