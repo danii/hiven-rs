@@ -278,7 +278,8 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 pub enum Error {
 	ExpectationFailed(&'static str, String),
 	SocketClose(Option<CloseFrame<'static>>),
-	InternalChannelError(String)
+	//Serialization(),
+	InternalChannel(String)
 }
 
 impl Error {
@@ -293,7 +294,7 @@ impl Error {
 
 	pub fn send_error<T>(error: SendError<T>) -> Self
 			where T: Debug {
-		Self::InternalChannelError(format!("{:?}", error))
+		Self::InternalChannel(format!("{:?}", error))
 	}
 }
 
