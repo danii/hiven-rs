@@ -25,6 +25,8 @@ use std::{
 	future::{Future, ready},
 	pin::Pin,
 	result::Result as STDResult,
+	sync::Arc,
+	thread::{JoinHandle, spawn},
 	time::Duration
 };
 use tokio::{
@@ -61,18 +63,37 @@ type Result<T> = STDResult<T, Error>;
 /// etiquette to automate seperate accounts, dedicated for automation, rather
 /// than your own.
 pub struct Client<'u, 't> {
-	addresses: (&'u str, &'u str),
 	token: &'t str,
+	domains: (&'u str, &'u str),
 	http_client: HTTPClient
 }
 
 impl<'u, 't> Client<'u, 't> {
+	/// Creates a new client with an authentication token. Uses the official
+	/// hiven.io servers.
 	pub fn new(token: &'t str) -> Self {
 		Self {
-			addresses: ("api.hiven.io", "swarm-dev.hiven.io"),
 			token: token,
+			domains: ("api.hiven.io", "swarm-dev.hiven.io"),
 			http_client: HTTPClient::new()
 		}
+	}
+
+	/// Creates a new client with an authentication token, allows you to specify
+	/// a base domain for the api and gateway.
+	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
+			Self {
+		Self {
+			token,
+			domains: (api_base, gateway_base),
+			http_client: HTTPClient::new()
+		}
+	}
+
+	pub async fn new_gate_keeper<'c, E>(&'c self, event_handler: E) ->
+			GateKeeper<'c, 'u, 't, E>
+				where E: EventHandler {
+		GateKeeper::new(self, event_handler)
 	}
 
 	/// Takes control of this thread, starting a connection to the gateway and
@@ -112,11 +133,7 @@ impl<'u, 't> Client<'u, 't> {
 	// the introduction of a stop function.
 	pub async fn start_gateway<E>(&self, event_handler: E) -> Result<()>
 			where E: EventHandler {
-		let gate_keeper = GateKeeper {
-			client: self,
-			event_handler: event_handler
-		};
-
+		let gate_keeper = GateKeeper::new(self, event_handler);
 		gate_keeper.start_gateway().await
 	}
 
@@ -127,15 +144,38 @@ impl<'u, 't> Client<'u, 't> {
 			path: PathInfo::MessageSend {
 				channel_id: room.into()
 			},
-			body: RequestBodyInfo::MessageSend {
-				content: content
-			}
-		}, self.addresses.0).await;
+			body: RequestBodyInfo::MessageSend {content}
+		}, self.domains.0).await;
+	}
+
+	pub async fn trigger_typing<R>(&self, room: R)
+			where R: Into<u64> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::TypingTrigger {
+				channel_id: room.into()
+			},
+			body: RequestBodyInfo::TypingTrigger {}
+		}, self.domains.0).await;
 	}
 }
 
-async fn execute_request<'a>(client: &HTTPClient, request: RequestInfo,
-		base_url: &'a str) {
+impl Client<'static, 'static> {
+	pub fn start_gateway_later<E>(self: Arc<Self>, event_handler: E) ->
+			JoinHandle<()>
+				where E: EventHandler + 'static {
+		spawn(move || {
+			let gate_keeper = GateKeeper::new(&self, event_handler);
+			let mut runtime = tokio::runtime::Runtime::new().unwrap();
+			runtime.block_on(async {
+				gate_keeper.start_gateway().await.unwrap();
+			});
+		})
+	}
+}
+
+async fn execute_request(client: &HTTPClient, request: RequestInfo,
+		base_url: &str) {
 	let path = format!("https://{}/v1{}", base_url, request.path.path());
 	let http_request = client.request(request.body.method(), &path)
 		.header("authorization", request.token);
@@ -160,7 +200,11 @@ pub struct GateKeeper<'c, 'u, 't, E>
 }
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
-		where E: EventHandler{
+		where E: EventHandler {
+	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
+		Self {client, event_handler}
+	}
+
 	pub async fn start_gateway(&self) -> Result<()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
@@ -178,7 +222,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
 			mut receiver: Receiver<Option<Frame>>) -> Result<()> {
-		let url = format!("wss://{}/socket", self.client.addresses.1);
+		let url = format!("wss://{}/socket", self.client.domains.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
 		loop {
@@ -199,7 +243,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						_ => ()
 					},
 					WebsocketMessage::Close(close_data) => return Err(Error::socket_close(close_data)),
-					frame @ _ => return Err(Error::expectation_failed(
+					frame => return Err(Error::expectation_failed(
 						"Text or Close frames only", frame))
 				},
 				// Remove unwrap()s.
@@ -305,7 +349,7 @@ impl<T> From<SendError<T>> for Error
 	}
 }
 
-pub trait EventHandler {
+pub trait EventHandler: Send {
 	fn on_connect<'c>(&self, _client: &'c Client<'c, 'c>, _event: EventInitState) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
 		// NoOp
 		Box::pin(ready(()))

@@ -1,6 +1,6 @@
 [package]
 name = "hiven-rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Daniel Conley <danielc030417@gmail.com>"]
 edition = "2018"
 description = "API bindings for hiven.io"
