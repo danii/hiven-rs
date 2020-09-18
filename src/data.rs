@@ -16,7 +16,7 @@ pub struct House {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Member {
 	pub user: User,
-	pub presence: Presence
+	//pub presence: Presence
 }
 
 #[derive(Debug, Deserialize, Serialize)]

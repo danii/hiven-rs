@@ -2,8 +2,10 @@ use serde::{
 	Deserialize,
 	de::{Deserializer, Error as DeserializeError, Unexpected}
 };
+use std::sync::Mutex;
+use tokio::join;
 
-const FROM_STR_ERR: &'static str =
+const FROM_STR_ERR: &str =
 	"string value that can be parsed into other values";
 
 pub(crate) fn from_str<'d, T, D>(deserializer: D) -> Result<T, D::Error>
@@ -24,3 +26,14 @@ pub(crate) fn from_str_opt<'d, T, D>(deserializer: D) -> Result<Option<T>, D::Er
 		None => None
 	})
 }
+
+pub(crate) macro join_first($($future:expr),*) {{
+	let result = Mutex::new(None);
+	join!($(async {
+		let output = $future.await;
+		if let ref mut result @ None = *result.lock().unwrap() {
+			*result = Some(output)
+		}
+	}),*);
+	result.into_inner().unwrap().unwrap()
+}}

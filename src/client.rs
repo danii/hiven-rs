@@ -8,7 +8,8 @@ use self::super::{
 	http::{
 		PathInfo,
 		RequestInfo, RequestBodyInfo
-	}
+	},
+	util::join_first
 };
 use async_trait::async_trait;
 use async_tungstenite::{
@@ -19,15 +20,20 @@ use async_tungstenite::{
 	}
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use reqwest::Client as HTTPClient;
-use serde_json::{from_str as from_json, to_string as to_json};
+use reqwest::{Client as HTTPClient, Error as ReqwestError};
+use serde_json::{
+	Error as SerdeJSONError,
+	from_str as from_json, to_string as to_json
+};
 use std::{
 	fmt::Debug,
 	result::Result as STDResult,
+	sync::Arc,
+	thread::{JoinHandle, spawn},
 	time::Duration
 };
 use tokio::{
-	join, select,
+	select,
 	sync::{Notify, mpsc::{Receiver, Sender, channel, error::SendError}},
 	time::timeout
 };
@@ -66,6 +72,8 @@ pub struct Client<'u, 't> {
 }
 
 impl<'u, 't> Client<'u, 't> {
+	/// Creates a new client with an authentication token. Uses the official
+	/// hiven.io servers.
 	pub fn new(token: &'t str) -> Self {
 		Self {
 			token: token,
@@ -74,13 +82,21 @@ impl<'u, 't> Client<'u, 't> {
 		}
 	}
 
+	/// Creates a new client with an authentication token, allows you to specify
+	/// a base domain for the api and gateway.
 	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
 			Self {
 		Self {
-			token: token,
+			token,
 			domains: (api_base, gateway_base),
 			http_client: HTTPClient::new()
 		}
+	}
+
+	pub async fn new_gate_keeper<'c, E>(&'c self, event_handler: E) ->
+			GateKeeper<'c, 'u, 't, E>
+				where E: EventHandler {
+		GateKeeper::new(self, event_handler)
 	}
 
 	/// Takes control of this thread, starting a connection to the gateway and
@@ -120,41 +136,60 @@ impl<'u, 't> Client<'u, 't> {
 	// the introduction of a stop function.
 	pub async fn start_gateway<E>(&self, event_handler: E) -> Result<()>
 			where E: EventHandler {
-		let gate_keeper = GateKeeper {
-			client: self,
-			event_handler: event_handler
-		};
-
+		let gate_keeper = GateKeeper::new(self, event_handler);
 		gate_keeper.start_gateway().await
 	}
 
-	pub async fn send_message<R>(&self, room: R, content: String)
+	pub async fn send_message<R>(&self, room: R, content: String) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
 			token: self.token.to_owned(),
 			path: PathInfo::MessageSend {
 				channel_id: room.into()
 			},
-			body: RequestBodyInfo::MessageSend {
-				content: content
-			}
-		}, self.domains.0).await;
+			body: RequestBodyInfo::MessageSend {content}
+		}, self.domains.0).await
+	}
+
+	pub async fn trigger_typing<R>(&self, room: R) -> Result<()>
+			where R: Into<u64> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::TypingTrigger {
+				channel_id: room.into()
+			},
+			body: RequestBodyInfo::TypingTrigger {}
+		}, self.domains.0).await
 	}
 }
 
-async fn execute_request<'a>(client: &HTTPClient, request: RequestInfo,
-		base_url: &'a str) {
+impl Client<'static, 'static> {
+	pub fn start_gateway_later<E>(self: Arc<Self>, event_handler: E) ->
+			JoinHandle<()>
+				where E: EventHandler + 'static {
+		spawn(move || {
+			let gate_keeper = GateKeeper::new(&self, event_handler);
+			let mut runtime = tokio::runtime::Runtime::new().unwrap();
+			runtime.block_on(async {
+				gate_keeper.start_gateway().await.unwrap();
+			});
+		})
+	}
+}
+
+async fn execute_request(client: &HTTPClient, request: RequestInfo,
+		base_url: &str) -> Result<()> {
 	let path = format!("https://{}/v1{}", base_url, request.path.path());
 	let http_request = client.request(request.body.method(), &path)
 		.header("authorization", request.token);
 
 	let http_request = if request.body.method() != "GET" {
 		http_request.header("content-type", "application/json")
-			.body(to_json(&request.body).unwrap()) // Remove unwrap().
+			.body(to_json(&request.body)?)
 	} else {http_request};
-	
-	// Remove unwrap()s.
-	http_request.send().await.unwrap().error_for_status().unwrap();
+
+	http_request.send().await?.error_for_status()?;
+	Ok(())
 }
 
 // These lifetimes and this generic are a special set of generics, they are able
@@ -168,24 +203,36 @@ pub struct GateKeeper<'c, 'u, 't, E>
 }
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
-		where E: EventHandler{
+		where E: EventHandler {
+	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
+		Self {client, event_handler}
+	}
+
 	pub async fn start_gateway(&self) -> Result<()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
 
-		match join!(
+		join_first!(
 			self.manage_gateway(incoming_send, outgoing_receive),
 			self.listen_gateway(incoming_receive, outgoing_send)
-		) {
-			(Ok(()), Ok(())) => Ok(()),
-			(Err(err), Ok(())) => Err(err),
-			(Ok(()), Err(err)) => Err(err),
-			(Err(_), Err(err)) => Err(err)
-		}
+		)
 	}
 
+	/// Starts the gateway websocket connection, and abstracts it as two async
+	/// multi producer single consumer channels that pass [Frame]s. The started
+	/// websocket connects to the gateway located at the borrowed client's gateway
+	/// address at `/socket`.
+	///
+	/// This method only returns once some external condition has been met. The
+	/// conditions are:
+	/// 1. Either one of the channel handle's channels dies (or both)
+	/// 	- Returns `Ok(())` in this case
+	/// 2. Data was received from the gateway that could not be parsed
+	/// 	- Returns `Err(_)` in this case
+	///
+	/// [Frame]: ../gateway/enum.Frame.html
 	async fn manage_gateway(&self, mut sender: Sender<Frame>,
-			mut receiver: Receiver<Option<Frame>>) -> Result<()> {
+			mut receiver: Receiver<Frame>) -> Result<()> {
 		let url = format!("wss://{}/socket", self.client.domains.1);
 		let mut socket = websocket_async(url).await.unwrap().0; // Remove unwrap().
 
@@ -198,45 +245,49 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				// Consider removing first unwrap(). (Can tungstenite return a None
 				// before SocketClose?)
 				frame = incoming_frame => match frame.unwrap().unwrap() {
-					// Remove unwrap()s.
-					WebsocketMessage::Text(frame) => match from_json::<Frame>(&frame) {
-						
-						Ok(frame) => sender.send(frame).await.unwrap(),
-						// Uncomment to show events that can't yet be parsed.
-						// Err(err) => println!("{:?}: {}", err, frame),
-						_ => ()
+					WebsocketMessage::Text(frame) => {
+						let frame = from_json(&frame)?;
+						if let Err(_) = sender.send(frame).await {
+							break Ok(()) // Channel died.
+						}
 					},
-					WebsocketMessage::Close(close_data) => return Err(Error::socket_close(close_data)),
-					frame @ _ => return Err(Error::expectation_failed(
-						"Text or Close frames only", frame))
+					WebsocketMessage::Close(close_data) =>
+						break Err(Error::SocketClose(close_data)),
+					frame =>
+						break Err(Error::expectation_failed("Text or Close frame", frame)),
 				},
-				// Remove unwrap()s.
-				frame = outgoing_frame => socket.send(WebsocketMessage::Text(
-					to_json(&frame.flatten().unwrap()).unwrap())).await.unwrap()
+
+				frame = outgoing_frame => match frame {
+					Some(frame) => {
+						let frame = WebsocketMessage::Text(to_json(&frame)?);
+						if let Err(_) = socket.send(frame).await {
+							break Ok(()) // Channel died.
+						}
+					},
+					None => break Ok(()) // Channel died.
+				}
 			}
 		}
 	}
 
+	/// Listens to and dispatches events from async multi producer single consumer
+	/// channels.
 	async fn listen_gateway(&self, mut receiver: Receiver<Frame>,
-			mut sender: Sender<Option<Frame>>) -> Result<()> {
-		let notify = Notify::new();
+			mut sender: Sender<Frame>) -> Result<()> {
+		let notifier = &Notify::new();
 
 		let heart_beat = match receiver.next().await {
 			// We got what we needed.
 			Some(Frame::Hello(OpCodeHello {heart_beat})) => {
-				let bag = (sender.clone(), Duration::from_millis(heart_beat.into()));
+				let mut sender = sender.clone();
+				let duration = Duration::from_millis(heart_beat.into());
 
-				// Set heart_beat to our heart beat future.
-				async {
-					let (mut sender, duration) = bag;
-
-					loop {
-						// Remove unwrap().
-						if let Ok(()) = timeout(duration, notify.notified()).await
-							{return Result::Ok(())}
-						sender.send(Some(Frame::HeartBeat)).await.unwrap();
-					}
-				}
+				async move {loop {
+					if let Ok(_) = timeout(duration, notifier.notified()).await
+						{break Ok(())}
+					if let Err(err) = sender.send(Frame::HeartBeat).await
+						{break Err(err.into())}
+				}}
 			},
 			// Expectation failed.
 			Some(frame) => return Err(Error::expectation_failed(
@@ -245,40 +296,31 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 			None => return Ok(())
 		};
 
-		let login_frame = Frame::Login(OpCodeLogin {
-			token: self.client.token.to_owned()
-		});
-		sender.send(Some(login_frame)).await?;
-
 		let listener = async {
-			let result = loop {
-				match receiver.next().await {
-					Some(Frame::Event(event)) => match event {
-						OpCodeEvent::InitState(data) =>
-							self.event_handler.on_connect(&self.client, data).await,
-						OpCodeEvent::HouseJoin(data) =>
-							self.event_handler.on_house_join(&self.client, data).await,
-						OpCodeEvent::TypingStart(data) =>
-							self.event_handler.on_typing(&self.client, data).await,
-						OpCodeEvent::MessageCreate(data) =>
-							self.event_handler.on_message(&self.client, data).await
-					},
-					// The channel died, exit gracefully.
-					None => break Result::Ok(()),
-					_ => unimplemented!() // Remove unimplemented!().
-				}
-			};
+			let result = loop {match receiver.next().await {
+				Some(Frame::Event(event)) => match event {
+					OpCodeEvent::InitState(data) =>
+						self.event_handler.on_connect(&self.client, data).await,
+					OpCodeEvent::HouseJoin(data) =>
+						self.event_handler.on_house_join(&self.client, data).await,
+					OpCodeEvent::TypingStart(data) =>
+						self.event_handler.on_typing(&self.client, data).await,
+					OpCodeEvent::MessageCreate(data) =>
+						self.event_handler.on_message(&self.client, data).await
+				},
+				// The channel died, exit gracefully.
+				None => break Ok(()),
+				_ => unimplemented!() // Remove unimplemented!().
+			}};
 
-			notify.notify();
+			notifier.notify();
 			result
 		};
 
-		match join!(heart_beat, listener) {
-			(Ok(()), Ok(())) => Ok(()),
-			(Err(err), Ok(())) => Err(err),
-			(Ok(()), Err(err)) => Err(err),
-			(Err(_), Err(err)) => Err(err)
-		}
+		let token = self.client.token.to_owned();
+		sender.send(Frame::Login(OpCodeLogin {token})).await?;
+
+		join_first!(listener, heart_beat)
 	}
 }
 
@@ -286,7 +328,9 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 pub enum Error {
 	ExpectationFailed(&'static str, String),
 	SocketClose(Option<CloseFrame<'static>>),
-	InternalChannelError(String)
+	HTTP(ReqwestError),
+	Serialization(SerdeJSONError),
+	InternalChannel
 }
 
 impl Error {
@@ -294,26 +338,28 @@ impl Error {
 			where S: Debug {
 		Self::ExpectationFailed(expected, format!("{:?}", got))
 	}
+}
 
-	pub fn socket_close(close_data: Option<CloseFrame<'static>>) -> Self {
-		Self::SocketClose(close_data)
-	}
-
-	pub fn send_error<T>(error: SendError<T>) -> Self
-			where T: Debug {
-		Self::InternalChannelError(format!("{:?}", error))
+impl<T> From<SendError<T>> for Error {
+	fn from(_: SendError<T>) -> Self {
+		Self::InternalChannel
 	}
 }
 
-impl<T> From<SendError<T>> for Error
-		where T: Debug {
-	fn from(error: SendError<T>) -> Self {
-		Self::send_error(error)
+impl From<SerdeJSONError> for Error {
+	fn from(error: SerdeJSONError) -> Self {
+		Self::Serialization(error)
+	}
+}
+
+impl From<ReqwestError> for Error {
+	fn from(error: ReqwestError) -> Self {
+		Self::HTTP(error)
 	}
 }
 
 #[async_trait]
-pub trait EventHandler: std::marker::Sync {
+pub trait EventHandler: Send + Sync {
 	async fn on_connect(&self, _client: &'_ Client<'_, '_>,
 		_event: EventInitState) {/* NoOp */}
 
