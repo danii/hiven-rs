@@ -28,7 +28,7 @@ use serde_json::{
 use std::{
 	fmt::Debug,
 	result::Result as STDResult,
-	sync::Arc,
+	sync::{Arc, Mutex},
 	thread::{JoinHandle, spawn},
 	time::Duration
 };
@@ -136,7 +136,7 @@ impl<'u, 't> Client<'u, 't> {
 	// the introduction of a stop function.
 	pub async fn start_gateway<E>(&self, event_handler: E) -> Result<()>
 			where E: EventHandler {
-		let gate_keeper = GateKeeper::new(self, event_handler);
+		let mut gate_keeper = GateKeeper::new(self, event_handler);
 		gate_keeper.start_gateway().await
 	}
 
@@ -168,7 +168,7 @@ impl Client<'static, 'static> {
 			JoinHandle<()>
 				where E: EventHandler + 'static {
 		spawn(move || {
-			let gate_keeper = GateKeeper::new(&self, event_handler);
+			let mut gate_keeper = GateKeeper::new(&self, event_handler);
 			let mut runtime = tokio::runtime::Runtime::new().unwrap();
 			runtime.block_on(async {
 				gate_keeper.start_gateway().await.unwrap();
@@ -199,23 +199,31 @@ async fn execute_request(client: &HTTPClient, request: RequestInfo,
 pub struct GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub client: &'c Client<'u, 't>,
-	pub event_handler: E
+	pub event_handler: E,
+	gateway: Option<Gateway>
 }
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
-		Self {client, event_handler}
+		Self {client, event_handler, gateway: None}
 	}
 
-	pub async fn start_gateway(&self) -> Result<()> {
+	pub async fn start_gateway(&mut self) -> Result<()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
+		self.gateway = Some(Gateway {
+			outbound: Mutex::new(outgoing_send.clone()),
+			stop_signal: Notify::new()
+		});
 
-		join_first!(
+		let stop_signal = &self.gateway.as_ref().unwrap().stop_signal;
+		let result = join_first!(
 			self.manage_gateway(incoming_send, outgoing_receive),
-			self.listen_gateway(incoming_receive, outgoing_send)
-		)
+			self.listen_gateway(incoming_receive, outgoing_send, stop_signal)
+		);
+		self.gateway = None;
+		result
 	}
 
 	/// Starts the gateway websocket connection, and abstracts it as two async
@@ -273,9 +281,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	/// Listens to and dispatches events from async multi producer single consumer
 	/// channels.
 	async fn listen_gateway(&self, mut receiver: Receiver<Frame>,
-			mut sender: Sender<Frame>) -> Result<()> {
-		let notifier = &Notify::new();
-
+			mut sender: Sender<Frame>, stop_singal: &Notify) -> Result<()> {
 		let heart_beat = match receiver.next().await {
 			// We got what we needed.
 			Some(Frame::Hello(OpCodeHello {heart_beat})) => {
@@ -283,7 +289,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				let duration = Duration::from_millis(heart_beat.into());
 
 				async move {loop {
-					if let Ok(_) = timeout(duration, notifier.notified()).await
+					if let Ok(_) = timeout(duration, stop_singal.notified()).await
 						{break Ok(())}
 					if let Err(err) = sender.send(Frame::HeartBeat).await
 						{break Err(err.into())}
@@ -313,7 +319,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				_ => unimplemented!() // Remove unimplemented!().
 			}};
 
-			notifier.notify();
+			stop_singal.notify();
 			result
 		};
 
@@ -322,6 +328,16 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 
 		join_first!(listener, heart_beat)
 	}
+
+	pub async fn stop(&self) {
+		self.gateway.as_ref().unwrap().stop_signal.notify()
+	}
+}
+
+#[allow(dead_code)]
+struct Gateway {
+	outbound: Mutex<Sender<Frame>>,
+	stop_signal: Notify
 }
 
 #[derive(Debug)]
