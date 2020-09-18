@@ -19,7 +19,7 @@ use async_tungstenite::{
 	}
 };
 use futures::{sink::SinkExt, stream::StreamExt};
-use reqwest::Client as HTTPClient;
+use reqwest::{Client as HTTPClient, Error as ReqwestError};
 use serde_json::{
 	Error as SerdeJSONError,
 	from_str as from_json, to_string as to_json
@@ -141,7 +141,7 @@ impl<'u, 't> Client<'u, 't> {
 		gate_keeper.start_gateway().await
 	}
 
-	pub async fn send_message<R>(&self, room: R, content: String)
+	pub async fn send_message<R>(&self, room: R, content: String) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
 			token: self.token.to_owned(),
@@ -149,10 +149,10 @@ impl<'u, 't> Client<'u, 't> {
 				channel_id: room.into()
 			},
 			body: RequestBodyInfo::MessageSend {content}
-		}, self.domains.0).await;
+		}, self.domains.0).await
 	}
 
-	pub async fn trigger_typing<R>(&self, room: R)
+	pub async fn trigger_typing<R>(&self, room: R) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
 			token: self.token.to_owned(),
@@ -160,7 +160,7 @@ impl<'u, 't> Client<'u, 't> {
 				channel_id: room.into()
 			},
 			body: RequestBodyInfo::TypingTrigger {}
-		}, self.domains.0).await;
+		}, self.domains.0).await
 	}
 }
 
@@ -179,18 +179,18 @@ impl Client<'static, 'static> {
 }
 
 async fn execute_request(client: &HTTPClient, request: RequestInfo,
-		base_url: &str) {
+		base_url: &str) -> Result<()> {
 	let path = format!("https://{}/v1{}", base_url, request.path.path());
 	let http_request = client.request(request.body.method(), &path)
 		.header("authorization", request.token);
 
 	let http_request = if request.body.method() != "GET" {
 		http_request.header("content-type", "application/json")
-			.body(to_json(&request.body).unwrap()) // Remove unwrap().
+			.body(to_json(&request.body)?)
 	} else {http_request};
 
-	// Remove unwrap()s.
-	http_request.send().await.unwrap().error_for_status().unwrap();
+	http_request.send().await?.error_for_status()?;
+	Ok(())
 }
 
 // These lifetimes and this generic are a special set of generics, they are able
@@ -331,6 +331,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 pub enum Error {
 	ExpectationFailed(&'static str, String),
 	SocketClose(Option<CloseFrame<'static>>),
+	HTTP(ReqwestError),
 	Serialization(SerdeJSONError),
 	InternalChannel
 }
@@ -351,6 +352,12 @@ impl<T> From<SendError<T>> for Error {
 impl From<SerdeJSONError> for Error {
 	fn from(error: SerdeJSONError) -> Self {
 		Self::Serialization(error)
+	}
+}
+
+impl From<ReqwestError> for Error {
+	fn from(error: ReqwestError) -> Self {
+		Self::HTTP(error)
 	}
 }
 
