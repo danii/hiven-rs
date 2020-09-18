@@ -258,7 +258,6 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						break Err(Error::expectation_failed("Text or Close frame", frame)),
 				},
 
-				// Remove unwrap()s.
 				frame = outgoing_frame => match frame {
 					Some(frame) => {
 						let frame = WebsocketMessage::Text(to_json(&frame)?);
@@ -315,7 +314,6 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				_ => unimplemented!() // Remove unimplemented!().
 			}};
 
-			// Remove unwrap maybe after thinking about how this could panic?
 			notifier.notify();
 			result
 		};
