@@ -11,6 +11,7 @@ use self::super::{
 	},
 	util::join_first
 };
+use async_std::prelude::FutureExt;
 use async_trait::async_trait;
 use async_tungstenite::{
 	tokio::connect_async as websocket_async,
@@ -26,6 +27,7 @@ use serde_json::{
 	from_str as from_json, to_string as to_json
 };
 use std::{
+	cell::UnsafeCell,
 	fmt::Debug,
 	result::Result as STDResult,
 	sync::{Arc, Mutex},
@@ -200,30 +202,23 @@ pub struct GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub client: &'c Client<'u, 't>,
 	pub event_handler: E,
-	gateway: Option<Gateway>
+	gateway: UnsafeCell<Option<Gateway>>
 }
 
 impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		where E: EventHandler {
 	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
-		Self {client, event_handler, gateway: None}
+		Self {client, event_handler, gateway: UnsafeCell::new(None)}
 	}
 
 	pub async fn start_gateway(&mut self) -> Result<()> {
 		let (outgoing_send, outgoing_receive) = channel(5);
 		let (incoming_send, incoming_receive) = channel(5);
-		self.gateway = Some(Gateway {
-			outbound: Mutex::new(outgoing_send.clone()),
-			stop_signal: Notify::new()
-		});
 
-		let stop_signal = &self.gateway.as_ref().unwrap().stop_signal;
-		let result = join_first!(
+		join_first!(
 			self.manage_gateway(incoming_send, outgoing_receive),
-			self.listen_gateway(incoming_receive, outgoing_send, stop_signal)
-		);
-		self.gateway = None;
-		result
+			unsafe {self.listen_gateway(incoming_receive, outgoing_send)}
+		)
 	}
 
 	/// Starts the gateway websocket connection, and abstracts it as two async
@@ -280,20 +275,35 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 
 	/// Listens to and dispatches events from async multi producer single consumer
 	/// channels.
-	async fn listen_gateway(&self, mut receiver: Receiver<Frame>,
-			mut sender: Sender<Frame>, stop_singal: &Notify) -> Result<()> {
+	#[allow(unused_unsafe)]
+	async unsafe fn listen_gateway(&self, mut receiver: Receiver<Frame>,
+			mut sender: Sender<Frame>) -> Result<()> {
+		let stop_singal = unsafe {
+			let unsafe_internals = self.gateway.get();
+			*unsafe_internals = Some(Gateway {
+				outbound: Mutex::new(sender.clone()),
+				stop_signal: Notify::new()
+			});
+			&(*unsafe_internals).as_ref().unwrap().stop_signal
+		};
+
 		let heart_beat = match receiver.next().await {
 			// We got what we needed.
 			Some(Frame::Hello(OpCodeHello {heart_beat})) => {
 				let mut sender = sender.clone();
 				let duration = Duration::from_millis(heart_beat.into());
 
-				async move {loop {
-					if let Ok(_) = timeout(duration, stop_singal.notified()).await
-						{break Ok(())}
-					if let Err(err) = sender.send(Frame::HeartBeat).await
-						{break Err(err.into())}
-				}}
+				async move {
+					let result = loop {
+						if let Ok(_) = timeout(duration, stop_singal.notified()).await
+							{break Ok(())}
+						if let Err(err) = sender.send(Frame::HeartBeat).await
+							{break Err(err.into())}
+					};
+
+					stop_singal.notify();
+					result
+				}
 			},
 			// Expectation failed.
 			Some(frame) => return Err(Error::expectation_failed(
@@ -303,16 +313,17 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		};
 
 		let listener = async {
-			let result = loop {match receiver.next().await {
+			let result = loop {match receiver.next()
+					.race(async {stop_singal.notified().await; None}).await {
 				Some(Frame::Event(event)) => match event {
 					OpCodeEvent::InitState(data) =>
-						self.event_handler.on_connect(&self.client, data).await,
+						self.event_handler.on_connect(&self, data).await,
 					OpCodeEvent::HouseJoin(data) =>
-						self.event_handler.on_house_join(&self.client, data).await,
+						self.event_handler.on_house_join(&self, data).await,
 					OpCodeEvent::TypingStart(data) =>
-						self.event_handler.on_typing(&self.client, data).await,
+						self.event_handler.on_typing(&self, data).await,
 					OpCodeEvent::MessageCreate(data) =>
-						self.event_handler.on_message(&self.client, data).await
+						self.event_handler.on_message(&self, data).await
 				},
 				// The channel died, exit gracefully.
 				None => break Ok(()),
@@ -326,13 +337,21 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		let token = self.client.token.to_owned();
 		sender.send(Frame::Login(OpCodeLogin {token})).await?;
 
-		join_first!(listener, heart_beat)
+		let result = join_first!(listener, heart_beat);
+		unsafe {*self.gateway.get() = None};
+		result
 	}
 
-	pub async fn stop(&self) {
-		self.gateway.as_ref().unwrap().stop_signal.notify()
+	pub fn stop(&self) -> Option<()> {
+		unsafe {
+			(*self.gateway.get()).as_ref()?.stop_signal.notify();
+			Some(())
+		}
 	}
 }
+
+unsafe impl<E> Sync for GateKeeper<'_, '_, '_, E>
+	where E: EventHandler {}
 
 #[allow(dead_code)]
 struct Gateway {
@@ -375,16 +394,16 @@ impl From<ReqwestError> for Error {
 }
 
 #[async_trait]
-pub trait EventHandler: Send + Sync {
-	async fn on_connect(&self, _client: &'_ Client<'_, '_>,
+pub trait EventHandler: Send + Sized + Sync {
+	async fn on_connect(&self, _client: &GateKeeper<'_, '_, '_, Self>,
 		_event: EventInitState) {/* NoOp */}
 
-	async fn on_house_join(&self, _client: &'_ Client<'_, '_>, _event: House)
-		{/* NoOp */}
+	async fn on_house_join(&self, _client: &GateKeeper<'_, '_, '_, Self>,
+		_event: House) {/* NoOp */}
 
-	async fn on_typing(&self, _client: &'_ Client<'_, '_>,
+	async fn on_typing(&self, _client: &GateKeeper<'_, '_, '_, Self>,
 		_event: EventTypingStart) {/* NoOp */}
 
-	async fn on_message(&self, _client: &'_ Client<'_, '_>, _event: Message)
-		{/* NoOp */}
+	async fn on_message(&self, _client: &GateKeeper<'_, '_, '_, Self>,
+		_event: Message) {/* NoOp */}
 }

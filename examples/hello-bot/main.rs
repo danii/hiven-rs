@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use hiven_rs::{Client, EventHandler, client::Error as ClientError, data::{House, Message}, gateway::EventInitState};
-use std::{future::Future, pin::Pin};
+use hiven_rs::{Client, EventHandler, GateKeeper, client::Error as ClientError, data::{House, Message}, gateway::EventInitState};
 use tokio::time::delay_for;
 
 #[tokio::main]
@@ -13,15 +12,19 @@ struct MyEventHandler;
 
 #[async_trait]
 impl EventHandler for MyEventHandler {
-	async fn on_connect(&self, _client: &'_ Client<'_, '_>, event: EventInitState) {
+	async fn on_connect(&self, _gate_keeper: &GateKeeper<'_, '_, '_, Self>,
+			event: EventInitState) {
 		println!("I am @{}, also known as {}.", event.user.username, event.user.name);
 	}
 
-	async fn on_house_join(&self, _client: &'_ Client<'_, '_>, event: House) {
+	async fn on_house_join(&self, _gate_keeper: &GateKeeper<'_, '_, '_, Self>,
+			event: House) {
 		println!("I just joined a house named {}.", event.name);
 	}
 
-	async fn on_message(&self, client: &'_ Client<'_, '_>, event: Message) {
+	async fn on_message(&self, gate_keeper: &GateKeeper<'_, '_, '_, Self>,
+			event: Message) {
+		let client = gate_keeper.client;
 		println!("I just heard someone say {}.", event.content);
 
 		if event.content.starts_with("$") {match &event.content[1..] {
@@ -32,6 +35,12 @@ impl EventHandler for MyEventHandler {
 				delay_for(std::time::Duration::from_millis(1000)).await;
 				client.send_message(event.room_id, "Hello!".to_owned()).await.unwrap();
 			},
+			"goodbye" => {
+				client.trigger_typing(event.room_id).await.unwrap();
+				delay_for(std::time::Duration::from_millis(1000)).await;
+				client.send_message(event.room_id, "Goodbye.".to_owned()).await.unwrap();
+				gate_keeper.stop();
+			}
 			_ => ()
 		}}
 	}
