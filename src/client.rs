@@ -287,7 +287,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	#[allow(unused_unsafe)]
 	async unsafe fn listen_gateway(&self, mut receiver: Receiver<Frame>,
 			mut sender: Sender<Frame>) -> Result<()> {
-		let stop_singal = unsafe {
+		let stop_signal = unsafe {
 			let unsafe_internals = self.gateway.get();
 			*unsafe_internals = Some(Gateway {
 				outbound: Mutex::new(sender.clone()),
@@ -304,13 +304,13 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 
 				async move {
 					let result = loop {
-						if let Ok(_) = timeout(duration, stop_singal.notified()).await
+						if let Ok(_) = timeout(duration, stop_signal.notified()).await
 							{break Ok(())}
 						if let Err(err) = sender.send(Frame::HeartBeat).await
 							{break Err(err.into())}
 					};
 
-					stop_singal.notify();
+					stop_signal.notify();
 					result
 				}
 			},
@@ -322,7 +322,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		};
 
 		let listener = async {
-			let race = StreamRace::new(receiver, stop_singal.notified());
+			let race = StreamRace::new(receiver, stop_signal.notified());
 			race.for_each_concurrent(None, |frame| async {match frame {
 				Frame::Event(event) => match event {
 					OpCodeEvent::InitState(data) =>
@@ -337,7 +337,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				_ => unimplemented!() // Remove unimplemented!().
 			}}).await;
 
-			stop_singal.notify();
+			stop_signal.notify();
 			Ok(())
 		};
 
