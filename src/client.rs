@@ -250,7 +250,14 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				// before SocketClose?)
 				frame = incoming_frame => match frame.unwrap().unwrap() {
 					WebsocketMessage::Text(frame) => {
-						let frame = from_json(&frame)?;
+						// This is to ignore invalid events, because not all events are
+						// coded in, and these events will return errors on deserialization.
+						let frame = match from_json(&frame) {
+							Ok(frame) => frame,
+							Err(_) => continue
+						};
+						//let frame = from_json(&frame)?;
+
 						if let Err(_) = sender.send(frame).await {
 							break Ok(()) // Channel died.
 						}
@@ -309,10 +316,8 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 						self.event_handler.on_house_join(&self.client, data).await,
 					OpCodeEvent::TypingStart(data) =>
 						self.event_handler.on_typing(&self.client, data).await,
-					OpCodeEvent::MessageCreate(data) => {
-						println!("Dispatching {:?}", data);
+					OpCodeEvent::MessageCreate(data) =>
 						self.event_handler.on_message(&self.client, data).await
-					}
 				},
 				_ => unimplemented!() // Remove unimplemented!().
 			}}).await;
