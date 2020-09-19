@@ -9,9 +9,8 @@ use self::super::{
 		PathInfo,
 		RequestInfo, RequestBodyInfo
 	},
-	util::join_first
+	util::{StreamRace, join_first}
 };
-use async_std::prelude::FutureExt;
 use async_trait::async_trait;
 use async_tungstenite::{
 	tokio::connect_async as websocket_async,
@@ -20,7 +19,10 @@ use async_tungstenite::{
 		protocol::frame::CloseFrame
 	}
 };
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::{
+	channel::mpsc::{Receiver, SendError, Sender, channel},
+	sink::SinkExt, stream::StreamExt
+};
 use reqwest::{Client as HTTPClient, Error as ReqwestError};
 use serde_json::{
 	Error as SerdeJSONError,
@@ -36,7 +38,7 @@ use std::{
 };
 use tokio::{
 	select,
-	sync::{Notify, mpsc::{Receiver, Sender, channel, error::SendError}},
+	sync::Notify,
 	time::timeout
 };
 
@@ -249,7 +251,14 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 				// before SocketClose?)
 				frame = incoming_frame => match frame.unwrap().unwrap() {
 					WebsocketMessage::Text(frame) => {
-						let frame = from_json(&frame)?;
+						// This is to ignore invalid events, because not all events are
+						// coded in, and these events will return errors on deserialization.
+						let frame = match from_json(&frame) {
+							Ok(frame) => frame,
+							Err(_) => continue
+						};
+						//let frame = from_json(&frame)?;
+
 						if let Err(_) = sender.send(frame).await {
 							break Ok(()) // Channel died.
 						}
@@ -313,9 +322,9 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		};
 
 		let listener = async {
-			let result = loop {match receiver.next()
-					.race(async {stop_singal.notified().await; None}).await {
-				Some(Frame::Event(event)) => match event {
+			let race = StreamRace::new(receiver, stop_singal.notified());
+			race.for_each_concurrent(None, |frame| async {match frame {
+				Frame::Event(event) => match event {
 					OpCodeEvent::InitState(data) =>
 						self.event_handler.on_connect(&self, data).await,
 					OpCodeEvent::HouseJoin(data) =>
@@ -325,13 +334,11 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 					OpCodeEvent::MessageCreate(data) =>
 						self.event_handler.on_message(&self, data).await
 				},
-				// The channel died, exit gracefully.
-				None => break Ok(()),
 				_ => unimplemented!() // Remove unimplemented!().
-			}};
+			}}).await;
 
 			stop_singal.notify();
-			result
+			Ok(())
 		};
 
 		let token = self.client.token.to_owned();
@@ -375,8 +382,8 @@ impl Error {
 	}
 }
 
-impl<T> From<SendError<T>> for Error {
-	fn from(_: SendError<T>) -> Self {
+impl From<SendError> for Error {
+	fn from(_: SendError) -> Self {
 		Self::InternalChannel
 	}
 }

@@ -1,8 +1,9 @@
+use futures::stream::Stream;
 use serde::{
 	Deserialize,
 	de::{Deserializer, Error as DeserializeError, Unexpected}
 };
-use std::sync::Mutex;
+use std::{future::Future, pin::Pin, sync::Mutex, task::{Context, Poll}};
 use tokio::join;
 
 const FROM_STR_ERR: &str =
@@ -37,3 +38,35 @@ pub(crate) macro join_first($($future:expr),*) {{
 	}),*);
 	result.into_inner().unwrap().unwrap()
 }}
+
+pub(crate) struct StreamRace<T, S, F> where
+		S: Stream<Item = T>,
+		F: Future<Output = ()> {
+	finish: Pin<Box<F>>,
+	stream: Pin<Box<S>>
+}
+
+impl<T, S, F> StreamRace<T, S, F> where
+		S: Stream<Item = T>,
+		F: Future<Output = ()> {
+	pub fn new(stream: S, finish: F) -> Self {
+		Self {
+			stream: Box::pin(stream),
+			finish: Box::pin(finish)
+		}
+	}
+}
+
+impl<T, S, F> Stream for StreamRace<T, S, F> where
+		S: Stream<Item = T>,
+		F: Future<Output = ()> {
+	type Item = T;
+
+	fn poll_next(mut self: Pin<&mut Self>, context: &mut Context)
+			-> Poll<Option<T>> {
+		match self.stream.as_mut().poll_next(context) {
+			Poll::Pending => self.finish.as_mut().poll(context).map(|_| None),
+			ready => ready
+		}
+	}
+}
