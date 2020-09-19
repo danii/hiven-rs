@@ -18,7 +18,10 @@ use async_tungstenite::{
 		protocol::frame::CloseFrame
 	}
 };
-use futures::{sink::SinkExt, stream::StreamExt};
+use futures::{
+	channel::mpsc::{Receiver, SendError, Sender, channel},
+	sink::SinkExt, stream::StreamExt
+};
 use reqwest::{Client as HTTPClient, Error as ReqwestError};
 use serde_json::{
 	Error as SerdeJSONError,
@@ -35,7 +38,7 @@ use std::{
 };
 use tokio::{
 	select,
-	sync::{Notify, mpsc::{Receiver, Sender, channel, error::SendError}},
+	sync::Notify,
 	time::timeout
 };
 
@@ -298,24 +301,24 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		};
 
 		let listener = async {
-			let result = loop {match receiver.next().await {
-				Some(Frame::Event(event)) => match event {
+			receiver.for_each_concurrent(None, |frame| async {match frame {
+				Frame::Event(event) => match event {
 					OpCodeEvent::InitState(data) =>
 						self.event_handler.on_connect(&self.client, data).await,
 					OpCodeEvent::HouseJoin(data) =>
 						self.event_handler.on_house_join(&self.client, data).await,
 					OpCodeEvent::TypingStart(data) =>
 						self.event_handler.on_typing(&self.client, data).await,
-					OpCodeEvent::MessageCreate(data) =>
+					OpCodeEvent::MessageCreate(data) => {
+						println!("Dispatching {:?}", data);
 						self.event_handler.on_message(&self.client, data).await
+					}
 				},
-				// The channel died, exit gracefully.
-				None => break Ok(()),
 				_ => unimplemented!() // Remove unimplemented!().
-			}};
+			}}).await;
 
 			notifier.notify();
-			result
+			Ok(())
 		};
 
 		let token = self.client.token.to_owned();
@@ -341,8 +344,8 @@ impl Error {
 	}
 }
 
-impl<T> From<SendError<T>> for Error {
-	fn from(_: SendError<T>) -> Self {
+impl From<SendError> for Error {
+	fn from(_: SendError) -> Self {
 		Self::InternalChannel
 	}
 }
