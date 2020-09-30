@@ -69,36 +69,36 @@ type Result<T> = STDResult<T, Error>;
 /// with your password.** Another thing to keep in mind; it's always good
 /// etiquette to automate seperate accounts, dedicated for automation, rather
 /// than your own.
-pub struct Client<'u, 't> {
-	token: &'t str,
-	domains: (&'u str, &'u str),
+pub struct Client {
+	token: Box<str>,
+	domains: (Box<str>, Box<str>),
 	http_client: HTTPClient
 }
 
-impl<'u, 't> Client<'u, 't> {
+impl Client {
 	/// Creates a new client with an authentication token. Uses the official
 	/// hiven.io servers.
-	pub fn new(token: &'t str) -> Self {
+	pub fn new(token: impl Into<Box<str>>) -> Self {
 		Self {
-			token: token,
-			domains: ("api.hiven.io", "swarm-dev.hiven.io"),
+			token: token.into(),
+			domains: ("api.hiven.io".into(), "swarm-dev.hiven.io".into()),
 			http_client: HTTPClient::new()
 		}
 	}
 
 	/// Creates a new client with an authentication token, allows you to specify
 	/// a base domain for the api and gateway.
-	pub fn new_at(token: &'t str, api_base: &'u str, gateway_base: &'u str) ->
-			Self {
+	pub fn new_at(token: impl Into<Box<str>>, api_base: impl Into<Box<str>>,
+			gateway_base: impl Into<Box<str>>) -> Self {
 		Self {
-			token,
-			domains: (api_base, gateway_base),
+			token: token.into(),
+			domains: (api_base.into(), gateway_base.into()),
 			http_client: HTTPClient::new()
 		}
 	}
 
 	pub async fn new_gate_keeper<'c, E>(&'c self, event_handler: E) ->
-			GateKeeper<'c, 'u, 't, E>
+			GateKeeper<'c, E>
 				where E: EventHandler {
 		GateKeeper::new(self, event_handler)
 	}
@@ -147,27 +147,25 @@ impl<'u, 't> Client<'u, 't> {
 	pub async fn send_message<R>(&self, room: R, content: String) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
-			token: self.token.to_owned(),
+			token: self.token.to_string(),
 			path: PathInfo::MessageSend {
 				channel_id: room.into()
 			},
 			body: RequestBodyInfo::MessageSend {content}
-		}, self.domains.0).await
+		}, &self.domains.0).await
 	}
 
 	pub async fn trigger_typing<R>(&self, room: R) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
-			token: self.token.to_owned(),
+			token: self.token.to_string(),
 			path: PathInfo::TypingTrigger {
 				channel_id: room.into()
 			},
 			body: RequestBodyInfo::TypingTrigger {}
-		}, self.domains.0).await
+		}, &self.domains.0).await
 	}
-}
 
-impl Client<'static, 'static> {
 	pub fn start_gateway_later<E>(self: Arc<Self>, event_handler: E) ->
 			JoinHandle<()>
 				where E: EventHandler + 'static {
@@ -196,20 +194,16 @@ async fn execute_request(client: &HTTPClient, request: RequestInfo,
 	Ok(())
 }
 
-// These lifetimes and this generic are a special set of generics, they are able
-// to describe the person reading them with 100% accuracy.
-//
-// I promise this wasn't intended, but now I love it.
-pub struct GateKeeper<'c, 'u, 't, E>
+pub struct GateKeeper<'c, E>
 		where E: EventHandler {
-	pub client: &'c Client<'u, 't>,
+	pub client: &'c Client,
 	pub event_handler: E,
 	gateway: UnsafeCell<Option<Gateway>>
 }
 
-impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
+impl<'c, E> GateKeeper<'c, E>
 		where E: EventHandler {
-	pub fn new(client: &'c Client<'u, 't>, event_handler: E) -> Self {
+	pub fn new(client: &'c Client, event_handler: E) -> Self {
 		Self {client, event_handler, gateway: UnsafeCell::new(None)}
 	}
 
@@ -342,7 +336,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 		};
 
 		let token = self.client.token.to_owned();
-		sender.send(Frame::Login(OpCodeLogin {token})).await?;
+		sender.send(Frame::Login(OpCodeLogin {token: token.to_string()})).await?;
 
 		let result = join_first!(listener, heart_beat);
 		unsafe {*self.gateway.get() = None};
@@ -357,7 +351,7 @@ impl<'c, 'u, 't, E> GateKeeper<'c, 'u, 't, E>
 	}
 }
 
-unsafe impl<E> Sync for GateKeeper<'_, '_, '_, E>
+unsafe impl<E> Sync for GateKeeper<'_, E>
 	where E: EventHandler {}
 
 #[allow(dead_code)]
@@ -402,15 +396,15 @@ impl From<ReqwestError> for Error {
 
 #[async_trait]
 pub trait EventHandler: Send + Sized + Sync {
-	async fn on_connect(&self, _client: &GateKeeper<'_, '_, '_, Self>,
+	async fn on_connect(&self, _client: &GateKeeper<'_, Self>,
 		_event: EventInitState) {/* NoOp */}
 
-	async fn on_house_join(&self, _client: &GateKeeper<'_, '_, '_, Self>,
-		_event: House) {/* NoOp */}
+	async fn on_house_join(&self, _client: &GateKeeper<'_, Self>, _event: House)
+		{/* NoOp */}
 
-	async fn on_typing(&self, _client: &GateKeeper<'_, '_, '_, Self>,
+	async fn on_typing(&self, _client: &GateKeeper<'_, Self>,
 		_event: EventTypingStart) {/* NoOp */}
 
-	async fn on_message(&self, _client: &GateKeeper<'_, '_, '_, Self>,
-		_event: Message) {/* NoOp */}
+	async fn on_message(&self, _client: &GateKeeper<'_, Self>, _event: Message)
+		{/* NoOp */}
 }
