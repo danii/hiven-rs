@@ -155,6 +155,30 @@ impl<'u, 't> Client<'u, 't> {
 		}, self.domains.0).await
 	}
 
+	pub async fn edit_message(&self, room: impl Into<u64>,
+			message: impl Into<u64>, content: String) -> Result<()> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::MessageEditDelete {
+				channel_id: room.into(),
+				message_id: message.into()
+			},
+			body: RequestBodyInfo::MessageSend {content}
+		}, self.domains.0).await
+	}
+
+	pub async fn delete_message(&self, room: impl Into<u64>,
+			message: impl Into<u64>) -> Result<()> {
+		execute_request(&self.http_client, RequestInfo {
+			token: self.token.to_owned(),
+			path: PathInfo::MessageEditDelete {
+				channel_id: room.into(),
+				message_id: message.into()
+			},
+			body: RequestBodyInfo::MessageDelete
+		}, self.domains.0).await
+	}
+
 	pub async fn trigger_typing<R>(&self, room: R) -> Result<()>
 			where R: Into<u64> {
 		execute_request(&self.http_client, RequestInfo {
@@ -383,7 +407,7 @@ pub trait EventHandler: Send {
 		Box::pin(ready(()))
 	}
 
-	fn on_message<'c>(&self, _client: &'c Client<'c, 'c>, _event: Message) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
+	fn on_message<'c>(&'c self, _client: &'c Client<'c, 'c>, _event: Message) -> Pin<Box<dyn Future<Output = ()> + 'c>> {
 		// NoOp
 		Box::pin(ready(()))
 	}
