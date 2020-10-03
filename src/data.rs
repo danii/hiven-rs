@@ -42,6 +42,8 @@ impl From<Room> for u64 {
 pub struct Message {
 	pub content: String,
 	#[serde(deserialize_with = "from_str")]
+	pub id: u64,
+	#[serde(deserialize_with = "from_str")]
 	pub room_id: u64,
 	#[serde(deserialize_with = "from_str")]
 	pub author_id: u64
